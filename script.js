@@ -535,10 +535,14 @@ document.addEventListener('DOMContentLoaded', () => {
     function matchesSearchTokens(text, tokens) {
         if (tokens.length === 0) return true;
         const availableTokens = getSearchTokens(text);
-        // AND semantics: every query token must match a document token.
-        // Prefix matching keeps results live while a word is being typed.
+        // AND semantics: every query token must appear inside a document token.
+        // Substring matching (not just prefix) lets the user search for any
+        // part of a word - e.g. "tree" finds "worktree" and "ignore" finds
+        // "gitignore" - consistent with the substring highlighting already
+        // used. Words typed from their start keep matching too, so the live
+        // narrowing stays responsive while a query is being typed.
         return tokens.every(token => availableTokens
-            .some(availableToken => availableToken.startsWith(token)));
+            .some(availableToken => availableToken.includes(token)));
     }
 
     // ------------------------------------------------------------------
