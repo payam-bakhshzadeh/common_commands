@@ -14,6 +14,10 @@
 // - In the editor, one Enter continues the same command; a blank line (two
 //   Enters) or Shift+Enter starts a new independent command.
 // - Tab / arrows move between copy buttons, Enter copies the focused button.
+// - Enter in the search box focuses the BEST-matching command (the visible
+//   row whose text has the most highlighted words); Tab / arrows then move
+//   on from there. Ties resolve to the first such row in document order and
+//   a query with no highlighted matches falls back to the first button.
 // - Ctrl+I adds a section; Ctrl+E edits the focused command row (or the whole
 //   section when a heading is focused) or the row whose id is typed in search.
 // - Custom sections and edits are persisted in localStorage.
@@ -649,6 +653,30 @@ document.addEventListener('DOMContentLoaded', () => {
     function focusFirstCopyButton() {
         const btns = getVisibleCopyButtons();
         if (btns.length > 0) btns[0].focus();
+    }
+
+    // The copy button whose command row has the most highlighted match words
+    // for the current live search - i.e. the single most relevant result. It
+    // is what Enter in the search box focuses first: the user lands straight
+    // on the command with the highest overlap instead of having to Tab there.
+    // Ties go to the first such row in document order; a query with no
+    // highlighted matches (e.g. empty search) yields the first visible button.
+    function findBestMatchCopyButton() {
+        const btns = getVisibleCopyButtons();
+        if (btns.length === 0) return null;
+        let best = btns[0];
+        let bestScore = -1;
+        btns.forEach(btn => {
+            const row = btn.closest('.cmd-row');
+            // Only the command's own text counts, so a heading match that is
+            // shared by every row of a section never skews the ranking.
+            const score = row ? row.querySelectorAll('mark.search-hit').length : 0;
+            if (score > bestScore) {
+                bestScore = score;
+                best = btn;
+            }
+        });
+        return best;
     }
 
     function moveCopyFocus(step) {
@@ -1592,9 +1620,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Enter in the search box:
-    //   ":N"               -> same action as Ctrl+E: open the editor for that id
-    //   plain number/text  -> jump to that command's copy button (or the first
-    //                         visible one), as before.
+    //   ":N"        -> same action as Ctrl+E: open the editor for that id
+    //   plain number-> jump to that exact command's copy button (as before)
+    //   text search -> jump to the copy button of the BEST-matching command:
+    //                  the visible row with the most highlighted words for
+    //                  the query. Ties go to the first such row; a query with
+    //                  no highlighted matches keeps the old "first button"
+    //                  behaviour.
     searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         e.preventDefault();
@@ -1616,7 +1648,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         }
-        focusFirstCopyButton();
+
+        // Re-run the (debounced) live filter synchronously so the marks
+        // scored below are up to date even when Enter is pressed before the
+        // 80ms debounce has flushed.
+        filterItems(searchInput.value);
+
+        const best = findBestMatchCopyButton();
+        if (best) {
+            try { best.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+            best.focus();
+        }
     }
 });
 

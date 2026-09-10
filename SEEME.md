@@ -21,3 +21,4 @@ Description:
 8. Hide All/Show All notes => Ctrl + Shift + ← or the fold-icon button in the search bar / Ctrl + Shift + →.
 9. Mouse users can also click a title to fold/unfold it; when a note is folded, TAB can focus its title and Ctrl + → re-opens it.
 10. Live Search: while typing, any matching section auto-expands so you can see the highlighted match; when the search narrows or is cleared, sections return to the state they had before searching.
+11. Enter = Best Match: after typing a query, pressing Enter focuses the command with the MOST highlighted words (the best overlap with your text), not just the first result. e.g. `git comm` focuses `git commit -m "comment"` straight away. TAB / Shift+TAB then move to the next / previous command.
