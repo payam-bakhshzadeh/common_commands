@@ -12,17 +12,17 @@
     <!-- Search bar: always visible, typing anywhere focuses it -->
     <div id="terminal-search">
         <div class="terminal-header">
-            <span>Search · Ctrl+I new section · Ctrl+E edit command · Del delete section · :N + Enter edits · Ctrl+← hide section · Ctrl+→ show section · Ctrl+Shift+← hide all · Ctrl+Shift+→ show all</span>
+            <span>Search · Ctrl+I new section · Ctrl+E edit command · Del delete section · :N + Enter edits · ← hide section · → show section · Ctrl+Alt+← hide all · Ctrl+Alt+→ show all</span>
             <span class="terminal-tools">
                 <span id="search-count">0 sections</span>
-                <button id="collapse-all-btn" class="header-btn collapse-toggle" type="button" title="Hide all commands (Ctrl+Shift+ArrowLeft)" aria-label="Hide all commands"></button>
+                <button id="collapse-all-btn" class="header-btn collapse-toggle" type="button" title="Hide all commands (Ctrl+Alt+ArrowLeft)" aria-label="Hide all commands"></button>
                 <button id="select-toggle" class="header-btn" type="button" data-select-ui aria-pressed="false" title="Select mode: tick commands, then delete them all at once">Select mode</button>
             </span>
         </div>
         <div class="terminal-body">
             <span class="prompt">></span>
             <input type="text" id="search-input"
-                placeholder="Type to search titles, commands &amp; comments…  «:5» finds &amp; highlights command 5 · Ctrl+E or Enter edits it · plain text + Enter copies · Esc to clear"
+                placeholder="Type to search titles, commands &amp; comments…  «:5» finds &amp; highlights command 5 · Ctrl+E or Enter edits it · plain text + Enter copies · Esc to clear · '---' makes a divider · 'label: command' shows a label chip"
                 autocomplete="off" />
         </div>
 

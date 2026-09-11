@@ -10,7 +10,11 @@
 //   (":N" is an explicit id query, so it never collides with text like "a= 10";
 //   a plain number that doesn't match any text also works). Enter jumps to it.
 // - Comments use '# ' syntax (trailing or full-line). Copy only ever includes
-//   the raw commands - comments are stripped and whole comment lines dropped.
+//   the raw commands - comments and optional "label:" chips are stripped.
+// - A line containing only '---' renders as a divider between sub-groups of
+//   commands within one section. Dividers get their own unique numeric id
+//   (from the same global counter as commands), so ":N" + Ctrl+E targets
+//   them too - and for a divider Ctrl+E simply deletes it after confirmation.
 // - In the editor, one Enter continues the same command; a blank line (two
 //   Enters) or Shift+Enter starts a new independent command.
 // - Tab / arrows move between copy buttons, Enter copies the focused button.
@@ -20,6 +24,8 @@
 //   a query with no highlighted matches falls back to the first button.
 // - Ctrl+I adds a section; Ctrl+E edits the focused command row (or the whole
 //   section when a heading is focused) or the row whose id is typed in search.
+// - ArrowLeft / ArrowRight (plain, no modifier) collapse/expand the focused
+//   section; Ctrl+Alt+ArrowLeft / Ctrl+Alt+ArrowRight do it for ALL sections.
 // - Custom sections and edits are persisted in localStorage.
 console.log('script.js (keyboard-first search + command blocks) loading...');
 
@@ -71,17 +77,39 @@ function findCommentStart(line) {
     return -1;
 }
 
+// Split an optional "label: command" prefix off a raw command line. The FIRST
+// top-level colon that is followed by whitespace (or ends the line) separates
+// the label from the command, so "first time init command: git init" keeps
+// "first time init command" as the label and copies only "git init". URLs,
+// env vars and flag values that keep their colon ("https://...", "PATH=/a:b")
+// are never mistaken for labels because their colon is not followed by a
+// space / end-of-line boundary.
+function splitCommandLabel(line) {
+    const s = String(line || '');
+    const m = /^\s*([^:\s][^:]*?)\s*:(\s|$)/.exec(s);
+    if (!m) return null;
+    const label = m[1].trim();
+    // Guards so real commands are never mistaken for labels:
+    // - a label never contains quotes (git commit -m "msg: fix" stays whole)
+    // - a label never contains '=', '/' or '#' (env vars, paths, prompts)
+    // - a label stays short (documentation word, not half a command line)
+    if (/["'=#/]/.test(label) || label.length > 40) return null;
+    return { label, rest: s.slice(m[0].length) };
+}
+
 // Build the innerHTML of .cmd-lines from the raw command text: one .ln span
 // per physical line; a full-line comment gets .comment-line (extra spacing);
 // an inline (trailing) comment is displayed on its own line ABOVE its code
-// line. Copy text is unaffected: getRowCommandText strips .comment spans and
-// drops lines that become empty, so only the raw commands are copied.
+// line. An optional "label: " prefix is rendered as a separate .cmd-label
+// chip. Copy text is unaffected: getRowCommandText strips .comment spans AND
+// .cmd-label chips and drops lines that become empty, so only the raw
+// commands are copied.
 function buildCommandHtml(text) {
     return String(text || '')
         .split(/\r?\n/)
         .map(line => {
             const idx = findCommentStart(line);
-            if (idx === -1) return `<span class="ln">${escapeHtml(line)}</span>`;
+            if (idx === -1) return renderCommandLineHtml(line);
             const cmd = line.slice(0, idx);
             if (cmd.trim() === '') {
                 return `<span class="ln comment-line"><span class="comment">${escapeHtml(line)}</span></span>`;
@@ -89,22 +117,37 @@ function buildCommandHtml(text) {
             // Inline comment: render the comment line first, then the code
             // line. The embedded \n keeps lines.textContent faithful so
             // re-normalisation (normalizeCodeBlocks) stays stable.
-            return `<span class="ln comment-line"><span class="comment">${escapeHtml(line.slice(idx))}</span></span>\n<span class="ln">${escapeHtml(cmd)}</span>`;
+            return `<span class="ln comment-line"><span class="comment">${escapeHtml(line.slice(idx))}</span></span>\n${renderCommandLineHtml(cmd)}`;
         })
         .join('\n');
 }
 
+// One physical (non-comment-only) line. If it starts with a "label: " prefix,
+// the label becomes a styled chip and the command the plain text - the chip
+// carries a leading space inside the SAME .ln so lines.textContent stays
+// faithful to the raw stored text (search, re-normalisation and editing are
+// all unaffected; only the COPY path strips the label).
+function renderCommandLineHtml(line) {
+    const split = splitCommandLabel(line);
+    if (!split || !split.label || !split.rest.trim()) {
+        return `<span class="ln">${escapeHtml(line)}</span>`;
+    }
+    const label = `<span class="cmd-label" aria-hidden="true">${escapeHtml(split.label)}:</span>`;
+    return `<span class="ln">${label} ${escapeHtml(split.rest.trim())}</span>`;
+}
+
 // The exact text copied for one .cmd-row: comments stripped, whole comment
-// lines dropped, remaining physical lines joined with a newline.
+// lines dropped, "label:" chips stripped (the label is documentation, never
+// part of the command), remaining physical lines joined with a newline.
 function getRowCommandText(row) {
     const lines = Array.from(row.querySelectorAll('.ln'));
     const out = [];
     lines.forEach(ln => {
         const clone = ln.cloneNode(true);
-        clone.querySelectorAll('.comment').forEach(el => el.remove());
+        clone.querySelectorAll('.comment, .cmd-label').forEach(el => el.remove());
         const text = clone.textContent.replace(/\s+$/, '');
         if (text.trim() === '') return;
-        out.push(text);
+        out.push(text.trim());
     });
     return out.join('\n');
 }
@@ -382,6 +425,8 @@ document.addEventListener('DOMContentLoaded', () => {
         units.forEach(unit => {
             unit.body.forEach(el => {
                 if (!el.classList || !el.classList.contains('code-block')) return;
+                // Only command rows carry ids; '---' dividers are addressable
+                // through select mode instead, so they never consume a number.
                 el.querySelectorAll('.cmd-row').forEach(row => {
                     const id = String(i);
                     row.setAttribute('data-command-id', id);
@@ -392,6 +437,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
         });
+    }
+
+    // A divider needs no id badge - just its visible line span. (Selection
+    // and deletion of dividers happen through select mode checkboxes.)
+    function decorateRowDivider(divider) {
+        let line = divider.querySelector('.divider-line');
+        if (!line) {
+            line = document.createElement('span');
+            line.className = 'divider-line';
+            divider.appendChild(line);
+        }
     }
 
     // Resolve a command-id query from the search box. An id can be written
@@ -445,6 +501,24 @@ document.addEventListener('DOMContentLoaded', () => {
         root.querySelectorAll('.cmd-row').forEach(row => {
             const lines = row.querySelector('.cmd-lines');
             if (lines) lines.innerHTML = buildCommandHtml(lines.textContent);
+        });
+        ensureRowDividers(root);
+    }
+
+    // '---' on its own line inside a section renders as a thin divider with a
+    // small vertical gap, letting the user group the commands of ONE section
+    // into visual sub-groups (e.g. commands 1-3 above the line, 4-7 below it).
+    // The divider is a real element, so it survives re-sorts, edits and
+    // re-renders; it never gets a copy button, an id or a checkbox.
+    function ensureRowDividers(root = content) {
+        root.querySelectorAll('.cmd-row').forEach(row => {
+            const lines = row.querySelector('.cmd-lines');
+            if (!lines) return;
+            if (String(lines.textContent).trim() !== '---') return;
+            const divider = document.createElement('div');
+            divider.className = 'row-divider';
+            decorateRowDivider(divider);
+            row.replaceWith(divider);
         });
     }
 
@@ -545,6 +619,44 @@ document.addEventListener('DOMContentLoaded', () => {
             .some(availableToken => availableToken.includes(token)));
     }
 
+    // Which command rows inside one section match the live query?
+    //
+    // Row-level semantics (so a 1000-command section only shows the rows the
+    // user actually asked for). A query token matches a row when ANY of:
+    // 1. Some token of the row's own text contains it  -> "igno" finds only
+    //    the gitignore row inside the "git" section.
+    // 2. Some token of the section TITLE contains it   -> typing a full title
+    //    word ("git") keeps every row of that section visible, as before.
+    // 3. The token STARTS with a full title word and the row contains that
+    //    word -> the compound-word rule: "gitig" = title "git" + fragment
+    //    "ig", so all git commands stay visible; but "igno" (which contains
+    //    no title word) filters down to just the gitignore row.
+    function queryTokenMatchesRow(token, rowTokens, titleTokens) {
+        if (rowTokens.some(rt => rt.includes(token))) return true;
+        if (titleTokens.some(tt => tt.includes(token))) return true;
+        const head = titleTokens.find(tt => token.startsWith(tt) && token.length > tt.length);
+        if (head && rowTokens.some(rt => rt.includes(head))) return true;
+        return false;
+    }
+
+    function getMatchingRowsInUnit(unit, tokens) {
+        if (tokens.length === 0) {
+            return Array.from(content.querySelectorAll('.cmd-row'));
+        }
+        const titleTokens = getSearchTokens(unit.heading ? unit.heading.textContent : '');
+        const matches = [];
+        unit.body.forEach(el => {
+            if (!el.classList || !el.classList.contains('code-block')) return;
+            el.querySelectorAll('.cmd-row').forEach(row => {
+                const rowTokens = getSearchTokens(codeBlockText(row));
+                if (tokens.every(token => queryTokenMatchesRow(token, rowTokens, titleTokens))) {
+                    matches.push(row);
+                }
+            });
+        });
+        return matches;
+    }
+
     // ------------------------------------------------------------------
     // Filtering (smart search): matches titles, commands AND comments
     // ------------------------------------------------------------------
@@ -571,6 +683,8 @@ document.addEventListener('DOMContentLoaded', () => {
         // exact command before pressing Ctrl+E or Enter.
         if (q.startsWith(':')) {
             const rest = q.slice(1).trim();
+            // Leaving a text query for id mode: undo any row hiding from it.
+            content.querySelectorAll('.cmd-row').forEach(row => { row.style.display = ''; });
             if (rest === '') {
                 units.forEach(u => {
                     setUnitVisible(u, true);
@@ -621,17 +735,34 @@ document.addEventListener('DOMContentLoaded', () => {
                 setUnitVisible(u, true);
                 applySnapshotToUnit(u);
             });
+            // Reset any row hiding left over from a previous (narrower) query.
+            content.querySelectorAll('.cmd-row').forEach(row => { row.style.display = ''; });
             visible = units.length;
         } else {
             units.forEach(u => {
-                const title = u.heading ? u.heading.textContent : '';
-                const contentText = u.body.map(codeBlockText).join(' ');
-                const matches = matchesSearchTokens(`${title} ${contentText}`, searchTokens);
-                setUnitVisible(u, matches);
-                if (matches) {
+                // First pass: which of this section's ROWS match? A section
+                // is shown when at least one row matches (or its title alone
+                // matches every token); within it only the matched rows stay
+                // visible, so big sections don't flood the results.
+                const matchedRows = getMatchingRowsInUnit(u, searchTokens);
+                const titleOnlyMatch = matchedRows.length === 0 && matchesSearchTokens(
+                    u.heading ? u.heading.textContent : '', searchTokens);
+                const unitMatches = matchedRows.length > 0 || titleOnlyMatch;
+                setUnitVisible(u, unitMatches);
+                if (unitMatches) {
                     // A matched section is force-expanded so its highlighted
                     // commands are actually visible while the search is live.
                     applyCollapsedClass(unitKey(u), false);
+                    // Second pass: hide the rows that did not match (display
+                    // only - never removed, so editing/ids/copy are intact).
+                    // A title-only match keeps the whole section visible.
+                    u.body.forEach(el => {
+                        if (!el.classList || !el.classList.contains('code-block')) return;
+                        el.querySelectorAll('.cmd-row').forEach(row => {
+                            row.style.display =
+                                (titleOnlyMatch || matchedRows.includes(row)) ? '' : 'none';
+                        });
+                    });
                     const targets = [];
                     if (u.heading) targets.push(u.heading);
                     targets.push(...u.body);
@@ -698,12 +829,16 @@ document.addEventListener('DOMContentLoaded', () => {
     function getTabTargets() {
         // Tab cycles through the copy buttons in document order; a section
         // that is collapsed has no visible copy buttons, so its title becomes
-        // the Tab target instead (so Ctrl+ArrowRight can expand it again).
+        // the Tab target instead (so Alt+ArrowRight can expand it again).
+        // The collapsed title is ALWAYS a valid focus target even though its
+        // code block is display:none - the user must SEE where the focus is,
+        // and a strong CSS :focus highlight on the title provides that.
         // In select mode the row checkboxes are cycled together as before.
         const sel = isSelectMode()
             ? '.select-checkbox, .copy-btn, h2.collapsed'
             : '.copy-btn, h2.collapsed';
-        return Array.from(content.querySelectorAll(sel)).filter(isActuallyVisible);
+        return Array.from(content.querySelectorAll(sel)).filter(el =>
+            HEADING_RE.test(el.tagName) ? true : isActuallyVisible(el));
     }
 
     function handleTab(shiftKey) {
@@ -728,7 +863,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function moveSelectCheckboxFocus(step) {
-        const boxes = Array.from(content.querySelectorAll('.select-checkbox')).filter(isActuallyVisible);
+        const boxes = Array.from(
+            content.querySelectorAll('.cmd-row .select-checkbox, .row-divider .select-checkbox')
+        ).filter(isActuallyVisible);
         if (boxes.length === 0) return;
         const active = document.activeElement;
         const idx = boxes.indexOf(active);
@@ -800,6 +937,15 @@ document.addEventListener('DOMContentLoaded', () => {
         block.setAttribute('data-section-key', key);
 
         (blocks || []).forEach(command => {
+            // '---' on its own line = the H Line divider between sub-groups.
+            // It gets its select-mode checkbox from ensureRowCheckboxes.
+            if (String(command).trim() === '---') {
+                const divider = document.createElement('div');
+                divider.className = 'row-divider';
+                decorateRowDivider(divider);
+                block.appendChild(divider);
+                return;
+            }
             const row = document.createElement('div');
             row.className = 'cmd-row';
             row.setAttribute('data-section-key', key);
@@ -901,11 +1047,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const folded = content.querySelectorAll('h2.collapsed').length;
         if (folded === total) {
-            btn.title = 'Show all sections (Ctrl+Shift+ArrowRight)';
+            btn.title = 'Show all sections (Ctrl+Alt+ArrowRight)';
             btn.setAttribute('aria-label', 'Show all sections');
             btn.innerHTML = expandAllIcon;
         } else {
-            btn.title = 'Hide all commands (Ctrl+Shift+ArrowLeft)';
+            btn.title = 'Hide all commands (Ctrl+Alt+ArrowLeft)';
             btn.setAttribute('aria-label', 'Hide all commands');
             btn.innerHTML = collapseAllIcon;
         }
@@ -1073,8 +1219,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             if (!el.classList || !el.classList.contains('code-block')) return;
-            el.querySelectorAll('.cmd-row').forEach(row => {
-                const lines = row.querySelector('.cmd-lines');
+            // Children in DOM order: command rows AND '---' dividers, so a
+            // re-render (replaceSectionDom) rebuilds the exact same layout,
+            // divider positions included.
+            Array.from(el.children).forEach(child => {
+                if (child.classList && child.classList.contains('row-divider')) {
+                    commands.push('---');
+                    return;
+                }
+                if (!child.classList || !child.classList.contains('cmd-row')) return;
+                const lines = child.querySelector('.cmd-lines');
                 if (lines) commands.push(lines.textContent.replace(/\s+$/, ''));
             });
         });
@@ -1111,13 +1265,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('focusin', highlightActiveSection);
 
     function editBlockAt(row) {
-        const blockEl = row ? row.closest('.code-block') : null;
+        const target = row ? row.closest('.cmd-row') : null;
+        const blockEl = target ? target.closest('.code-block') : null;
         if (!blockEl) return;
         const key = blockEl.getAttribute('data-section-key');
         if (!key) return;
-        const rows = Array.from(blockEl.querySelectorAll('.cmd-row'));
-        const idx = rows.indexOf(row);
-        if (idx === -1) return;
+        // The stored model mixes commands with '---' divider entries in DOM
+        // order, so the index must count both.
+        let idx = 0;
+        for (const child of Array.from(blockEl.children)) {
+            if (child === target) break;
+            if (child.classList && (child.classList.contains('cmd-row')
+                || child.classList.contains('row-divider'))) idx++;
+        }
+        if (idx >= getSectionModel(key).commands.length) return;
         openModal('editBlock', key, idx);
     }
 
@@ -1139,6 +1300,7 @@ document.addEventListener('DOMContentLoaded', () => {
             modalDelete.textContent = 'Delete command';
         } else {
             modalHeading.disabled = false;
+            modalCommands.readOnly = false;
             modalCommands.value = '';
             if (mode === 'edit' && key) {
                 const model = getSectionModel(key);
@@ -1188,7 +1350,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const model = getSectionModel(modalKey);
             if (model.commands.length === 0) return;
             if (blocks.length === 0) { closeModal(); return; }
-
+            // Never allow a single-command edit to overwrite a divider.
+            if (String(model.commands[modalBlockIndex]).trim() === '---') {
+                closeModal();
+                return;
+            }
             const newTitle = modalHeading.value.trim();
             if (!newTitle) {
                 modalHeading.value = model.title;
@@ -1343,22 +1509,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function ensureRowCheckboxes(root = content) {
-        root.querySelectorAll('.cmd-row').forEach(row => {
+        // Command rows AND '---' dividers both get a checkbox: select mode
+        // can delete them together in one pass. Nothing else changes for the
+        // existing command checkboxes.
+        root.querySelectorAll('.cmd-row, .row-divider').forEach(row => {
             if (row.querySelector('.select-checkbox')) return;
             const cb = document.createElement('input');
             cb.type = 'checkbox';
             cb.className = 'select-checkbox';
             cb.setAttribute('data-select-ui', '');
-            cb.setAttribute('aria-label', 'Select this command for deletion');
+            cb.setAttribute('aria-label', row.classList.contains('row-divider')
+                ? 'Select this divider for deletion'
+                : 'Select this command for deletion');
             row.insertBefore(cb, row.firstChild);
         });
+    }
+
+    // Everything select mode can tick: command rows plus dividers.
+    function getSelectableRows(root = content) {
+        return Array.from(root.querySelectorAll('.cmd-row, .row-divider'));
     }
 
     function updateSelectUI() {
         // Selections only make sense for what is currently visible: when a
         // search filter hides a section, its ticks are cleared so "Select
         // all" and "Delete selected" always affect exactly what the user sees.
-        content.querySelectorAll('.cmd-row.selected').forEach(row => {
+        getSelectableRows().forEach(row => {
+            if (!row.classList.contains('selected')) return;
             if (!isActuallyVisible(row)) {
                 const cb = row.querySelector('.select-checkbox');
                 if (cb) cb.checked = false;
@@ -1366,7 +1543,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
 
-        const rows = Array.from(content.querySelectorAll('.cmd-row'));
+        const rows = getSelectableRows();
         const visible = rows.filter(isActuallyVisible);
         const selected = rows.filter(r => r.classList.contains('selected'));
         const selVisible = selected.filter(isActuallyVisible);
@@ -1385,7 +1562,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function clearSelectionState() {
         content.querySelectorAll('.select-checkbox').forEach(cb => { cb.checked = false; });
-        content.querySelectorAll('.cmd-row.selected').forEach(r => r.classList.remove('selected'));
+        content.querySelectorAll('.cmd-row.selected, .row-divider.selected')
+            .forEach(r => r.classList.remove('selected'));
     }
 
     function enterSelectMode() {
@@ -1406,11 +1584,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function deleteSelectedRows() {
-        const rows = Array.from(content.querySelectorAll('.cmd-row.selected'));
+        // Selected command rows AND selected '---' dividers go in one batch.
+        const rows = getSelectableRows().filter(r => r.classList.contains('selected'));
         if (rows.length === 0) return;
+        const dividerCount = rows.filter(r => r.classList.contains('row-divider')).length;
+        const cmdCount = rows.length - dividerCount;
         const msg = rows.length === 1
-            ? 'Delete this selected command?'
-            : `Delete these ${rows.length} selected commands?\n\nSections that become empty will be removed too.`;
+            ? (dividerCount === 1 ? 'Delete this selected divider?' : 'Delete this selected command?')
+            : `Delete these ${rows.length} selected items (${cmdCount} command${cmdCount === 1 ? '' : 's'}, ${dividerCount} divider${dividerCount === 1 ? '' : 's'})?\n\nSections that become empty will be removed too.`;
         if (!confirm(msg)) return;
 
         // Group by the code-block each selected row lives in (one block == one
@@ -1426,16 +1607,22 @@ document.addEventListener('DOMContentLoaded', () => {
         byBlock.forEach((selRows, block) => {
             const key = block.getAttribute('data-section-key');
             if (!key) return;
-            const allRows = Array.from(block.querySelectorAll('.cmd-row'));
+            // Model indexes include '---' divider entries, so map each row to
+            // its position among rows + dividers in DOM order. Selected
+            // dividers map to their '---' model entry and are spliced exactly
+            // like command rows.
+            const ordered = Array.from(block.children).filter(child =>
+                child.classList && (child.classList.contains('cmd-row')
+                    || child.classList.contains('row-divider')));
             const idxs = selRows
-                .map(r => allRows.indexOf(r))
+                .map(r => ordered.indexOf(r))
                 .filter(i => i !== -1)
                 .sort((a, b) => b - a);
             if (idxs.length === 0) return;
             const model = getSectionModel(key);
             if (!model || !Array.isArray(model.commands)) return;
             idxs.forEach(i => model.commands.splice(i, 1));
-            if (model.commands.length === 0) {
+            if (model.commands.filter(c => String(c).trim() !== '---').length === 0) {
                 deleteSection(key);
             } else {
                 saveModel(key, model);
@@ -1460,7 +1647,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         selectAllInput.addEventListener('change', () => {
             const on = selectAllInput.checked;
-            content.querySelectorAll('.cmd-row').forEach(row => {
+            getSelectableRows().forEach(row => {
                 if (!isActuallyVisible(row)) return;
                 const cb = row.querySelector('.select-checkbox');
                 if (!cb) return;
@@ -1473,9 +1660,10 @@ document.addEventListener('DOMContentLoaded', () => {
         deleteSelectedBtn.addEventListener('click', deleteSelectedRows);
 
         // A tick anywhere in the content updates the row state + the header.
+        // Works for command rows and dividers alike (closest matches either).
         content.addEventListener('change', (e) => {
             if (!e.target.classList || !e.target.classList.contains('select-checkbox')) return;
-            const row = e.target.closest('.cmd-row');
+            const row = e.target.closest('.cmd-row, .row-divider');
             if (row) row.classList.toggle('selected', e.target.checked);
             updateSelectUI();
         });
@@ -1567,23 +1755,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Collapse / expand a single section (Ctrl+ArrowLeft/Right) or the
-        // whole page (Ctrl+Shift+ArrowLeft = hide all, ArrowRight = show all).
-        if ((e.ctrlKey || e.metaKey) && !e.altKey
-            && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
-            if (e.shiftKey) {
-                e.preventDefault();
-                if (e.key === 'ArrowLeft') collapseAllSections();
-                else expandAllSections();
-                return;
-            }
-            // Plain Ctrl+Arrow keys are also the browser's cursor-jump / word
-            // navigation inside text inputs, so never steal them while the
-            // search box is focused.
-            if (active === searchInput) return;
+        // Collapse / expand ALL sections: Ctrl+Alt+ArrowLeft / Ctrl+Alt+ArrowRight.
+        if (e.altKey && (e.ctrlKey || e.metaKey) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
             e.preventDefault();
+            if (e.key === 'ArrowLeft') collapseAllSections();
+            else expandAllSections();
+            return;
+        }
+
+        // Collapse / expand ONE section: plain ArrowLeft / ArrowRight (no
+        // modifier at all). ArrowLeft folds the section that contains the
+        // focused element; ArrowRight unfolds it. The search box is skipped
+        // so its caret navigation keeps working, and with no section in
+        // focus the arrows keep their normal browser behaviour.
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+            && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            if (active === searchInput) return;
             const key = getActiveSectionKey();
             if (key) {
+                e.preventDefault();
                 if (e.key === 'ArrowLeft') collapseSection(key);
                 else expandSection(key);
             }

@@ -70,8 +70,37 @@ code {
     padding: 12px 58px 12px 14px;
 }
 
-.cmd-row + .cmd-row {
+.cmd-row+.cmd-row {
     border-top: 1px solid #1a1a1a;
+}
+
+/* "---" divider: a thin line with a small vertical gap that separates
+   sub-groups of commands INSIDE one section (not between sections). It has
+   no id and never gets a copy button - deletion goes through select mode. */
+.row-divider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 14px;
+}
+
+.row-divider .divider-line {
+    flex: 1 1 auto;
+    height: 0.1px;
+    background: #9300d5;
+    opacity: 0.3;
+}
+
+/* A selected divider uses the same tinted background as a selected command. */
+.row-divider.selected {
+    background: rgba(132, 19, 169, 0.10);
+    border-radius: 6px;
+}
+
+.row-divider+.cmd-row,
+.cmd-row+.row-divider,
+.row-divider+.row-divider {
+    border-top: none;
 }
 
 .cmd-lines {
@@ -98,6 +127,20 @@ code {
 .cmd-lines .ln.comment-line {
     margin: 4px 0 14px;
     color: #8a8a8a;
+}
+
+/* لیبل اختیاری «label: command» - فقط نمایشی است و هرگز کپی نمی‌شود */
+.cmd-lines .cmd-label {
+    background-color: black;
+    padding: 3px;
+    font-family: "iA Writer Mono S";
+    font-weight: bold;
+    font-size: small;
+    border: 1px solid rgb(32, 32, 32) !important;
+    border-radius: 4px;
+    margin-right: 6px;
+    color: #d0d0d0;
+    user-select: none;
 }
 
 /* شناسه عددی یکتای هر دستور؛ با «:شماره» در جستجو + Ctrl+E برای ویرایش */
@@ -611,6 +654,20 @@ body.selecting .select-checkbox {
 #content h2:focus .collapse-icon {
     filter: drop-shadow(0 0 6px rgba(132, 19, 169, 0.8));
     transform: scale(1.2);
+}
+
+/* Tab focus on a section TITLE (especially a collapsed one): the title must
+   be clearly visible as the current focus, otherwise the user "gets lost" in
+   a folded section whose copy buttons are hidden. Purple glow + tint + left
+   accent bar make the focused title unmistakable. */
+#content h2[data-section-key]:focus {
+    color: #ffffff;
+    background: rgba(132, 19, 169, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(132, 19, 169, 0.45), 0 0 18px rgba(132, 19, 169, 0.25);
+    padding-left: 10px;
+    margin-left: -10px;
+    transition: box-shadow 0.15s ease, background 0.15s ease;
 }
 
 /* Collapsed sections show the caret rotated 90deg, i.e. pointing right
