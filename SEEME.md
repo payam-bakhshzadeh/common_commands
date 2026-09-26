@@ -1,4 +1,4 @@
-1. Edit=>  :ID + Enter || focus on note and press `Ctrl + E`
+1. Edit=>  #ID + Enter || focus on note and press `Ctrl + E`
 2. New=> Ctrl + i
 3. Switch between notes=> TAB
 4. Note Structure=> Title= git
@@ -15,7 +15,7 @@ Description:
 	- baraye neveshat code badi bayad 2×ENTER zad(eyne iA Writer)
 	- age ye code tollani bud auto be satr badi mire. vali agar khastim dasti khodemun edame code ro tu satr badi 					benevisim  1×ENTER bayad zad. 
 
-5. Comment: Dar balaye sar har note mitavan ba `# + [space] + text` coment nevesht.
+5. Comment: Dar balaye sar har note mitavan ba `# + [space] + text` coment nevesht. (agar bejaye fasele, bad az `#` mostaghiman adad biayad mesle `#10` yani ID) 
 6. Multi Note Selection: Dar gesmate bala samte rast yek button bename: `Select Mode` darim. aval bayad TRUE kard bad note ha va khat haaye afghori (---) ra entekhab va ba zadan kilid DELETE yekja pak kard.
 7. Collapse/Expand => ← collapse / → expand (plain arrow keys, no modifier; provided that focus is on a copy button or the title of that note).
 8. Hide All/Show All notes => Ctrl + Alt + ← or the fold-icon button in the search bar / Ctrl + Alt + →.
@@ -26,3 +26,4 @@ Description:
 13. Row-level Filtering: only the command rows that actually match the query stay visible inside each section (e.g. `igno` in section `git` shows ONLY the gitignore row, not the whole section). If a word matches the section TITLE itself, every row of that section stays visible (e.g. `gitig` = title `git` + rows, so all git commands still show).
 14. Divider (H Line): a line containing only `---` inside a note renders as a thin horizontal divider with a small gap, separating sub-groups of commands within the SAME note. It is stored as a `---` entry, so edits/re-sorts keep its position. It has no id and no copy button — to delete one, tick its checkbox in Select mode and press Delete. It is never copied or counted.
 15. Labels: write `label: command` (e.g. `account 1: 123...`) and the part before the first `: ` renders as a black chip. Labels are NEVER copied - pressing the copy button still copies only the command itself. Search matches both the label and the command.
+16. ESC (Cancel/Back) => 4 karr: 1) search-e zende ra pak mikonad va hame note ha barmigardand (ham az search box, ham vaghti focus roye yek command ast). 2) agar search khali bashad, focus be search box barmigardad. 3) dar `Select Mode` => az mode kharej mishavad (mesle dokme `Exit select`). 4) agar search khali va focus dakhele search box bashad => khode search bar baste mishavad. Baraye baz kardane dobare: tayp kardan dar har jaye safhe, ya `Backspace`, ya `Ctrl + /` (in shortcut search bar ra baz/baste mikonad). Dar editor (modal) ham ESC = baste shodan-e panjere.

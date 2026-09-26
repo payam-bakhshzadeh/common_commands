@@ -6,14 +6,16 @@
 // - Each title is ONE code block (.code-block). Every command inside it is a
 //   .cmd-row with its own copy button and its own numeric id badge (1, 2, 3...)
 //   that is global across all sections and re-numbered from 1 on every re-sort.
-// - To edit a command by id, type ":N" in the search box and press Ctrl+E
-//   (":N" is an explicit id query, so it never collides with text like "a= 10";
-//   a plain number that doesn't match any text also works). Enter jumps to it.
+// - To edit a command by id, type "#N" in the search box and press Enter (or
+//   Ctrl+E). "#N" means '#' IMMEDIATELY followed by the number - the same id
+//   syntax the content itself uses - so it never collides with text like
+//   "a= 10" nor with the "# comment" syntax; a plain number that doesn't match
+//   any text also works.
 // - Comments use '# ' syntax (trailing or full-line). Copy only ever includes
 //   the raw commands - comments and optional "label:" chips are stripped.
 // - A line containing only '---' renders as a divider between sub-groups of
 //   commands within one section. Dividers get their own unique numeric id
-//   (from the same global counter as commands), so ":N" + Ctrl+E targets
+//   (from the same global counter as commands), so "#N" + Ctrl+E targets
 //   them too - and for a divider Ctrl+E simply deletes it after confirmation.
 // - In the editor, one Enter continues the same command; a blank line (two
 //   Enters) or Shift+Enter starts a new independent command.
@@ -26,6 +28,11 @@
 //   section when a heading is focused) or the row whose id is typed in search.
 // - ArrowLeft / ArrowRight (plain, no modifier) collapse/expand the focused
 //   section; Ctrl+Alt+ArrowLeft / Ctrl+Alt+ArrowRight do it for ALL sections.
+// - Escape cancels, step by step: it clears the live query (every section and
+//   row comes back), returns focus to the search box, leaves Select mode, and
+//   with an empty query it closes the search bar itself. Ctrl+/ (and typing
+//   anywhere, or Backspace) opens the bar again - the open/close behaviour of
+//   the original terminal bar.
 // - Custom sections and edits are persisted in localStorage.
 console.log('script.js (keyboard-first search + command blocks) loading...');
 
@@ -186,6 +193,9 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM ready - initializing');
 
     const content = document.getElementById('content');
+    // The search bar itself: it can be closed with Escape (and opened again
+    // with Ctrl+/ or simply by typing) - see the Escape / Ctrl+/ handling.
+    const searchBar = document.getElementById('terminal-search');
     const searchInput = document.getElementById('search-input');
     const searchCount = document.getElementById('search-count');
 
@@ -450,14 +460,28 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Resolve a command-id query from the search box. An id can be written
-    // with a leading ':' (e.g. ":10") to tell it apart from a plain text
-    // search (e.g. "10" matching "a= 10"); a plain number that isn't a live
-    // text match can still be used by the Ctrl+E / Enter handlers.
+    // Resolve a command-id query from the search box. An id is written exactly
+    // like the id chips of the content: '#' IMMEDIATELY followed by its number
+    // (e.g. "#10"). Because "# 10" (hash + space) is this project's comment
+    // syntax, the digits must touch the hash - that also tells an id query
+    // apart from a plain text search (e.g. "10" matching "a= 10"). A plain
+    // number that isn't a live text match can still be used by the
+    // Ctrl+E / Enter handlers.
     function parseIdQuery(value) {
         const q = String(value || '').trim();
         if (!q) return null;
-        const m = /^:(\d+)$/.exec(q);
+        const m = /^#(\d+)$/.exec(q);
+        return m ? m[1] : null;
+    }
+
+    // Same id syntax while the user is STILL TYPING: returns the digits that
+    // follow a leading '#' ('#' -> '', '#1' -> '1', '#10' -> '10', ...) or
+    // null when the query is a normal text search. Thanks to the (\d*) the
+    // match is only there when '#' is immediately followed by digits, so a
+    // '#comment text' / '# فایل' style query keeps searching text as before.
+    function parseIdPrefixQuery(value) {
+        const q = String(value || '').trim();
+        const m = /^#(\d*)$/.exec(q);
         return m ? m[1] : null;
     }
 
@@ -470,7 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Plain numbers: only treat them as command ids when they are candidates
     // AND the query does not match any visible content text (otherwise "10"
     // is a text search for "a= 10"). The exact/named ids are handled by
-    // getBlockById via the ":" prefix, so here we intentionally match a row
+    // getBlockById via the "#" prefix, so here we intentionally match a row
     // whose numeric id is NOT already present in the text.
     function findRowForStat(value) {
         const q = String(value || '').trim();
@@ -486,7 +510,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return row;
     }
 
-    // Ctrl+E support for typing a plain id without the ':' prefix: resolve,
+    // Ctrl+E support for typing a plain id without the '#' prefix: resolve,
     // but only when the number is not also live matching text.
     function resolveIdForEdit(value) {
         const byPrefix = getBlockById(value);
@@ -676,13 +700,17 @@ document.addEventListener('DOMContentLoaded', () => {
             captureCollapsedSnapshot();
         }
 
-        // Live id-search mode. ":" alone keeps EVERYTHING visible (nothing is
-        // hidden, since ':' isn't inside any text). As soon as digits follow
-        // (":145") only the sections that contain a matching id stay visible
-        // and every matching row is highlighted, so the user can confirm the
-        // exact command before pressing Ctrl+E or Enter.
-        if (q.startsWith(':')) {
-            const rest = q.slice(1).trim();
+        // Live id-search mode: '#' immediately followed by digits ("#145") is
+        // the id syntax of the content, so only the sections that contain a
+        // matching id stay visible and every matching row is highlighted - the
+        // user can confirm the exact command before pressing Enter / Ctrl+E.
+        // '#' alone keeps EVERYTHING visible (nothing is hidden, the user is
+        // simply still typing the number). A '#' that is NOT directly followed
+        // by digits (e.g. "# comment text") is not an id at all, so it falls
+        // through to the normal text search below.
+        const idPrefix = parseIdPrefixQuery(q);
+        if (idPrefix !== null) {
+            const rest = idPrefix;
             // Leaving a text query for id mode: undo any row hiding from it.
             content.querySelectorAll('.cmd-row').forEach(row => { row.style.display = ''; });
             if (rest === '') {
@@ -918,6 +946,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         filterItems(searchInput.value);
         searchInput.focus();
+    }
+
+    // ------------------------------------------------------------------
+    // Open / close the search bar itself
+    // ------------------------------------------------------------------
+    // Closing only hides the bar (the query is cleared by clearSearch() first,
+    // so the content is always left in its plain "everything visible" state).
+    // Typing anywhere, Backspace or Ctrl+/ brings the bar straight back.
+    function isSearchBarOpen() {
+        return !searchBar.classList.contains('hidden');
+    }
+
+    function openSearchBar() {
+        searchBar.classList.remove('hidden');
+        searchInput.focus();
+    }
+
+    function closeSearchBar() {
+        searchBar.classList.add('hidden');
+        searchInput.blur();
     }
 
     // ------------------------------------------------------------------
@@ -1695,6 +1743,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // of typing a space into the search box.
                 if (onSelectControl && e.key === ' ') return;
                 e.preventDefault();
+                // Typing is also what re-opens a closed search bar.
+                openSearchBar();
                 insertIntoSearch(e.key);
                 return;
             }
@@ -1708,6 +1758,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // clicking a copy button) deletes inside the search box instead.
         if (e.key === 'Backspace' && active !== searchInput && !onSelectControl) {
             e.preventDefault();
+            openSearchBar();
             backspaceInSearch();
             return;
         }
@@ -1719,8 +1770,17 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        // Ctrl+/: open / close the search bar - the shortcut the original
+        // terminal bar used, and the partner of "Escape closes the bar".
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === '/' || e.code === 'Slash')) {
+            e.preventDefault();
+            if (isSearchBarOpen()) closeSearchBar();
+            else openSearchBar();
+            return;
+        }
+
         // Ctrl+E: edit the command row whose id is typed in the search box
-        // (":10" or, when no text matches it, "10"), otherwise the row under
+        // ("#10" or, when no text matches it, "10"), otherwise the row under
         // the focused copy button, and for a focused heading keep the whole
         // section edit.
         if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'e' || e.key === 'E')) {
@@ -1804,17 +1864,37 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // Escape: back to the search box, or clear it if already focused.
+        // Escape - the "cancel / back out" key. It always did four things in
+        // this project (the editor modal handles its own Escape above), in
+        // this order:
+        //   1) a live query is cleared, so every section and row comes back
+        //      ("Esc to clear", also from a focused copy button);
+        //   2) from anywhere else it puts focus back into the search box;
+        //   3) while selecting it leaves Select mode (same as "Exit select");
+        //   4) with an empty query and the box already focused, it closes the
+        //      search bar itself ("Esc closes the search bar"). Typing
+        //      anywhere, Backspace or Ctrl+/ opens the bar again.
         if (e.key === 'Escape') {
             e.preventDefault();
-            if (active === searchInput) clearSearch();
-            else searchInput.focus();
+            if (searchInput.value !== '') {
+                clearSearch();
+                return;
+            }
+            if (active !== searchInput) {
+                openSearchBar();
+                return;
+            }
+            if (isSelectMode()) {
+                exitSelectMode();
+                return;
+            }
+            closeSearchBar();
             return;
         }
     });
 
     // Enter in the search box:
-    //   ":N"        -> same action as Ctrl+E: open the editor for that id
+    //   "#N"        -> same action as Ctrl+E: open the editor for that id
     //   plain number-> jump to that exact command's copy button (as before)
     //   text search -> jump to the copy button of the BEST-matching command:
     //                  the visible row with the most highlighted words for

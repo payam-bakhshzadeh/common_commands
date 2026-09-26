@@ -549,6 +549,12 @@ mark.search-hit {
     display: none;
 }
 
+/* The search bar can be closed with Escape (Ctrl+/ or just typing opens it
+   again) - same behaviour as the original terminal search bar. */
+#terminal-search.hidden {
+    display: none;
+}
+
 .select-all-label {
     display: inline-flex;
     align-items: center;
