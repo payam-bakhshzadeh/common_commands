@@ -82,12 +82,14 @@ code {
     align-items: center;
     gap: 8px;
     margin: 14px 14px;
+	  background-color: black;
+	  height: 10px;
 }
 
 .row-divider .divider-line {
     flex: 1 1 auto;
     height: 0.1px;
-    background: #9300d5;
+    /*background: #9300d5;*/
     opacity: 0.3;
 }
 
