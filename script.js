@@ -227,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let modalMode = 'add';
     let modalKey = null;
     let modalBlockIndex = null;
+    let modalTargetRowId = null;
 
     // ------------------------------------------------------------------
     // Copy buttons + command id badges (one set per command row)
@@ -871,8 +872,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function handleTab(shiftKey) {
         const targets = getTabTargets();
-        if (targets.length === 0) return;
         const active = document.activeElement;
+
+        if (!shiftKey && active === searchInput) {
+            const idQuery = parseIdQuery(searchInput.value);
+            if (idQuery !== null) {
+                const targetRow = content.querySelector(`.cmd-row[data-command-id="${idQuery}"]`);
+                if (targetRow) {
+                    const btn = targetRow.querySelector('.copy-btn');
+                    if (btn && isActuallyVisible(btn)) {
+                        try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                        btn.focus();
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (targets.length === 0) return;
         const idx = targets.indexOf(active);
 
         if (shiftKey) {
@@ -1327,6 +1344,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 || child.classList.contains('row-divider'))) idx++;
         }
         if (idx >= getSectionModel(key).commands.length) return;
+        modalTargetRowId = target ? target.getAttribute('data-command-id') : null;
         openModal('editBlock', key, idx);
     }
 
@@ -1370,7 +1388,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function closeModal() {
         editorModal.classList.add('hidden');
-        searchInput.focus();
+        openSearchBar();
+
+        let restoredFocus = false;
+        if (modalMode === 'editBlock' && modalTargetRowId) {
+            const row = content.querySelector(`.cmd-row[data-command-id="${modalTargetRowId}"]`);
+            if (row && isActuallyVisible(row)) {
+                const btn = row.querySelector('.copy-btn');
+                if (btn) {
+                    try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                    btn.focus();
+                    restoredFocus = true;
+                }
+            }
+        } else if (modalMode === 'edit' && modalKey) {
+            const heading = content.querySelector(`h2[data-section-key="${modalKey}"]`);
+            if (heading && isActuallyVisible(heading)) {
+                const firstBtn = content.querySelector(`[data-section-key="${modalKey}"].code-block .copy-btn`);
+                const focusTarget = (firstBtn && isActuallyVisible(firstBtn)) ? firstBtn : heading;
+                try { focusTarget.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                focusTarget.focus();
+                restoredFocus = true;
+            }
+        }
+
+        if (!restoredFocus) {
+            searchInput.focus();
+        }
+
+        modalTargetRowId = null;
     }
 
     function afterContentChange() {
@@ -1508,6 +1554,7 @@ document.addEventListener('DOMContentLoaded', () => {
     editorModal.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             e.preventDefault();
+            e.stopPropagation();
             closeModal();
             return;
         }
@@ -1812,6 +1859,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.key === 'Enter' && active && active.matches('#content h2[data-section-key]')) {
             e.preventDefault();
             toggleSection(active.getAttribute('data-section-key'));
+            return;
+        }
+
+        // Scroll page with Ctrl+ArrowUp / Ctrl+ArrowDown (even when searchInput is focused)
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault();
+            const distance = e.key === 'ArrowDown' ? 120 : -120;
+            window.scrollBy({ top: distance, behavior: 'smooth' });
             return;
         }
 
