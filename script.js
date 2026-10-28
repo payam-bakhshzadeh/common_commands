@@ -240,6 +240,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const selectCancel = document.getElementById('select-cancel');
     const selectUi = !!(selectToggle && selectBar && selectAllInput && selectInfo && deleteSelectedBtn && selectCancel);
 
+    const backupBtn = document.getElementById('backup-btn');
+    const restoreBtn = document.getElementById('restore-btn');
+    const restoreFileInput = document.getElementById('restore-file');
+
+
     if (!content || !searchInput || !searchCount || !editorModal ||
         !modalHeading || !modalCommands || !modalSave || !modalDelete) {
         console.error('Required elements not found', { content, searchInput, searchCount, editorModal });
@@ -2045,6 +2050,52 @@ document.addEventListener('DOMContentLoaded', () => {
     const collapseAllBtn = document.getElementById('collapse-all-btn');
     if (collapseAllBtn) collapseAllBtn.addEventListener('click', toggleAllSections);
     updateCollapseAllButton();
+
+    // Backup / Restore: download the whole localStorage store as JSON, or
+    // replace it from a chosen backup file and reload.
+    function downloadBackup() {
+        try {
+            const store = getStore();
+            const blob = new Blob([JSON.stringify(store, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'common_commands_backup_' + new Date().toISOString().slice(0, 10) + '.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        } catch (err) { /* noop */ }
+    }
+    function restoreFromBackupFile(file) {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const parsed = JSON.parse(String(reader.result || ''));
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    throw new Error('invalid backup');
+                }
+                saveStore(parsed);
+                alert('Backup restored. The page will reload.');
+                location.reload();
+            } catch (err) {
+                alert('Invalid backup file.');
+            }
+        };
+        reader.readAsText(file);
+    }
+    if (backupBtn) backupBtn.addEventListener('click', downloadBackup);
+    if (restoreBtn && restoreFileInput) {
+        restoreBtn.addEventListener('click', () => restoreFileInput.click());
+    }
+    if (restoreFileInput) {
+        restoreFileInput.addEventListener('change', (e) => {
+            const f = e.target && e.target.files && e.target.files[0];
+            if (f) restoreFromBackupFile(f);
+            if (e.target) e.target.value = '';
+        });
+    }
 
     searchInput.focus();
 });
