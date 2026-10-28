@@ -36,6 +36,28 @@
 // - Custom sections and edits are persisted in localStorage.
 console.log('script.js (keyboard-first search + command blocks) loading...');
 
+// Smooth, minimal scrolling helper: prevent the browser's default (often
+// jarring) focus scroll and instead scroll the element into view gently,
+// only as far as needed (block: 'nearest'). This keeps the focused row in
+// the user's sight instead of snapping to a different third of the page.
+(function patchFocusScroll() {
+    const origFocus = HTMLElement.prototype.focus;
+    if (origFocus && !origFocus.__smoothPatched) {
+        function smoothFocus(options) {
+            const opts = Object.assign({}, options || {}, { preventScroll: true });
+            const ret = origFocus.call(this, opts);
+            try {
+                if (typeof this.scrollIntoView === 'function') {
+                    this.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+                }
+            } catch (e) { /* noop */ }
+            return ret;
+        }
+        smoothFocus.__smoothPatched = true;
+        HTMLElement.prototype.focus = smoothFocus;
+    }
+})();
+
 const copyIcon = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
 const checkIcon = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
 // Small purple caret shown at the end of a section title while a section is
@@ -751,7 +773,7 @@ document.addEventListener('DOMContentLoaded', () => {
             updateCollapseAllButton();
             console.log('filterItems (id mode)', JSON.stringify(q), 'visible:', visible);
             if (firstRow) {
-                try { firstRow.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+                try { firstRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (err) { /* noop */ }
             }
             return;
         }
@@ -881,7 +903,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (targetRow) {
                     const btn = targetRow.querySelector('.copy-btn');
                     if (btn && isActuallyVisible(btn)) {
-                        try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                        try { btn.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) { /* noop */ }
                         btn.focus();
                         return;
                     }
@@ -1396,7 +1418,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (row && isActuallyVisible(row)) {
                 const btn = row.querySelector('.copy-btn');
                 if (btn) {
-                    try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                    try { btn.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) { /* noop */ }
                     btn.focus();
                     restoredFocus = true;
                 }
@@ -1406,7 +1428,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (heading && isActuallyVisible(heading)) {
                 const firstBtn = content.querySelector(`[data-section-key="${modalKey}"].code-block .copy-btn`);
                 const focusTarget = (firstBtn && isActuallyVisible(firstBtn)) ? firstBtn : heading;
-                try { focusTarget.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                try { focusTarget.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) { /* noop */ }
                 focusTarget.focus();
                 restoredFocus = true;
             }
@@ -1972,7 +1994,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (stat) {
             const btn = stat.querySelector('.copy-btn');
             if (btn) {
-                try { btn.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+                try { btn.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (err) { /* noop */ }
                 btn.focus();
                 return;
             }
@@ -1985,7 +2007,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const best = findBestMatchCopyButton();
         if (best) {
-            try { best.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+            try { best.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (err) { /* noop */ }
             best.focus();
         }
     }

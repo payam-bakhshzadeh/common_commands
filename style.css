@@ -10,6 +10,11 @@ body {
     line-height: 1.75;
     margin: 0;
     padding: 0;
+    scroll-behavior: smooth;
+}
+
+html {
+    scroll-padding-top: 90px;
 }
 
 #content {
