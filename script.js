@@ -1,0 +1,2028 @@
+// Keyboard-first live search for a command reference with block comments.
+//
+// - One search box; typing anywhere focuses it. Clicking a copy button puts
+//   focus straight back into the search box so the user can keep typing or
+//   press Backspace without touching the mouse.
+// - Each title is ONE code block (.code-block). Every command inside it is a
+//   .cmd-row with its own copy button and its own numeric id badge (1, 2, 3...)
+//   that is global across all sections and re-numbered from 1 on every re-sort.
+// - To edit a command by id, type "#N" in the search box and press Enter (or
+//   Ctrl+E). "#N" means '#' IMMEDIATELY followed by the number - the same id
+//   syntax the content itself uses - so it never collides with text like
+//   "a= 10" nor with the "# comment" syntax; a plain number that doesn't match
+//   any text also works.
+// - Comments use '# ' syntax (trailing or full-line). Copy only ever includes
+//   the raw commands - comments and optional "label:" chips are stripped.
+// - A line containing only '---' renders as a divider between sub-groups of
+//   commands within one section. Dividers get their own unique numeric id
+//   (from the same global counter as commands), so "#N" + Ctrl+E targets
+//   them too - and for a divider Ctrl+E simply deletes it after confirmation.
+// - In the editor, one Enter continues the same command; a blank line (two
+//   Enters) or Shift+Enter starts a new independent command.
+// - Tab / arrows move between copy buttons, Enter copies the focused button.
+// - Enter in the search box focuses the BEST-matching command (the visible
+//   row whose text has the most highlighted words); Tab / arrows then move
+//   on from there. Ties resolve to the first such row in document order and
+//   a query with no highlighted matches falls back to the first button.
+// - Ctrl+I adds a section; Ctrl+E edits the focused command row (or the whole
+//   section when a heading is focused) or the row whose id is typed in search.
+// - ArrowLeft / ArrowRight (plain, no modifier) collapse/expand the focused
+//   section; Ctrl+Alt+ArrowLeft / Ctrl+Alt+ArrowRight do it for ALL sections.
+// - Escape cancels, step by step: it clears the live query (every section and
+//   row comes back), returns focus to the search box, leaves Select mode, and
+//   with an empty query it closes the search bar itself. Ctrl+/ (and typing
+//   anywhere, or Backspace) opens the bar again - the open/close behaviour of
+//   the original terminal bar.
+// - Custom sections and edits are persisted in localStorage.
+console.log('script.js (keyboard-first search + command blocks) loading...');
+
+const copyIcon = `<svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>`;
+const checkIcon = `<svg viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+// Small purple caret shown at the end of a section title while a section is
+// expanded (points down). It is rotated 90deg via CSS when collapsed.
+const sectionCaretIcon = `<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>`;
+// Header toggle icons: double chevrons that mirror the Ctrl+Shift+Left
+// (hide all) and Ctrl+Shift+Right (show all) shortcuts.
+const collapseAllIcon = `<svg viewBox="0 0 24 24"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg>`;
+const expandAllIcon = `<svg viewBox="0 0 24 24"><path d="M7 17l5-5-5-5M14 17l5-5-5-5"/></svg>`;
+
+const HEADING_RE = /^H[1-6]$/;
+// Elements treated as one indivisible search block (never descended into for
+// headings). Anything else without direct text is a transparent wrapper.
+const ATOMIC_TAGS = new Set([
+    'PRE', 'TABLE', 'FIGURE', 'HR', 'IMG', 'SVG',
+    'VIDEO', 'AUDIO', 'IFRAME', 'CANVAS'
+]);
+
+const STORAGE_KEY = 'freebuff_sections_v1';
+// Shift+Enter inside the editor inserts this separator. It is an actual line
+// separator, so it renders like a newline in a <textarea> while still being
+// distinct from a plain one-Enter line continuation.
+const BLOCK_SEP = '\u2028';
+
+// ------------------------------------------------------------------------
+// Comment-aware helpers
+// ------------------------------------------------------------------------
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// A comment starts at a '#' at the start of a line or right after whitespace,
+// and is followed by whitespace, another '#' or the end of the line.
+function findCommentStart(line) {
+    for (let i = 0; i < line.length; i++) {
+        if (line[i] !== '#') continue;
+        const prev = i === 0 ? '' : line[i - 1];
+        const next = i + 1 < line.length ? line[i + 1] : '';
+        if ((i === 0 || /\s/.test(prev)) && (next === '' || next === '#' || /\s/.test(next))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Split an optional "label: command" prefix off a raw command line. The FIRST
+// top-level colon that is followed by whitespace (or ends the line) separates
+// the label from the command, so "first time init command: git init" keeps
+// "first time init command" as the label and copies only "git init". URLs,
+// env vars and flag values that keep their colon ("https://...", "PATH=/a:b")
+// are never mistaken for labels because their colon is not followed by a
+// space / end-of-line boundary.
+function splitCommandLabel(line) {
+    const s = String(line || '');
+    const m = /^\s*([^:\s][^:]*?)\s*:(\s|$)/.exec(s);
+    if (!m) return null;
+    const label = m[1].trim();
+    // Guards so real commands are never mistaken for labels:
+    // - a label never contains quotes (git commit -m "msg: fix" stays whole)
+    // - a label never contains '=', '/' or '#' (env vars, paths, prompts)
+    // - a label stays short (documentation word, not half a command line)
+    if (/["'=#/]/.test(label) || label.length > 40) return null;
+    return { label, rest: s.slice(m[0].length) };
+}
+
+// Build the innerHTML of .cmd-lines from the raw command text: one .ln span
+// per physical line; a full-line comment gets .comment-line (extra spacing);
+// an inline (trailing) comment is displayed on its own line ABOVE its code
+// line. An optional "label: " prefix is rendered as a separate .cmd-label
+// chip. Copy text is unaffected: getRowCommandText strips .comment spans AND
+// .cmd-label chips and drops lines that become empty, so only the raw
+// commands are copied.
+function buildCommandHtml(text) {
+    return String(text || '')
+        .split(/\r?\n/)
+        .map(line => {
+            const idx = findCommentStart(line);
+            if (idx === -1) return renderCommandLineHtml(line);
+            const cmd = line.slice(0, idx);
+            if (cmd.trim() === '') {
+                return `<span class="ln comment-line"><span class="comment">${escapeHtml(line)}</span></span>`;
+            }
+            // Inline comment: render the comment line first, then the code
+            // line. The embedded \n keeps lines.textContent faithful so
+            // re-normalisation (normalizeCodeBlocks) stays stable.
+            return `<span class="ln comment-line"><span class="comment">${escapeHtml(line.slice(idx))}</span></span>\n${renderCommandLineHtml(cmd)}`;
+        })
+        .join('\n');
+}
+
+// One physical (non-comment-only) line. If it starts with a "label: " prefix,
+// the label becomes a styled chip and the command the plain text - the chip
+// carries a leading space inside the SAME .ln so lines.textContent stays
+// faithful to the raw stored text (search, re-normalisation and editing are
+// all unaffected; only the COPY path strips the label).
+function renderCommandLineHtml(line) {
+    const split = splitCommandLabel(line);
+    if (!split || !split.label || !split.rest.trim()) {
+        return `<span class="ln">${escapeHtml(line)}</span>`;
+    }
+    const label = `<span class="cmd-label" aria-hidden="true">${escapeHtml(split.label)}:</span>`;
+    return `<span class="ln">${label} ${escapeHtml(split.rest.trim())}</span>`;
+}
+
+// The exact text copied for one .cmd-row: comments stripped, whole comment
+// lines dropped, "label:" chips stripped (the label is documentation, never
+// part of the command), remaining physical lines joined with a newline.
+function getRowCommandText(row) {
+    const lines = Array.from(row.querySelectorAll('.ln'));
+    const out = [];
+    lines.forEach(ln => {
+        const clone = ln.cloneNode(true);
+        clone.querySelectorAll('.comment, .cmd-label').forEach(el => el.remove());
+        const text = clone.textContent.replace(/\s+$/, '');
+        if (text.trim() === '') return;
+        out.push(text.trim());
+    });
+    return out.join('\n');
+}
+
+// Clipboard write with a legacy fallback for file:// and blocked APIs.
+async function copyText(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+        return;
+    } catch (err) {
+        console.warn('clipboard API blocked, using legacy fallback', err);
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '0';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { if (document.execCommand) document.execCommand('copy'); } catch (e) { /* noop */ }
+    ta.remove();
+}
+
+// Editor text -> independent commands. One Enter continues a command; a blank
+// line (two Enter presses) or the Shift+Enter separator starts a new one.
+function parseBlocks(value) {
+    return String(value || '')
+        .split(BLOCK_SEP)
+        .flatMap(part => part.split(/\r?\n[ \t\r\n]*\r?\n/))
+        .map(block => block.trim())
+        .filter(Boolean);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM ready - initializing');
+
+    const content = document.getElementById('content');
+    // The search bar itself: it can be closed with Escape (and opened again
+    // with Ctrl+/ or simply by typing) - see the Escape / Ctrl+/ handling.
+    const searchBar = document.getElementById('terminal-search');
+    const searchInput = document.getElementById('search-input');
+    const searchCount = document.getElementById('search-count');
+
+    const editorModal = document.getElementById('editor-modal');
+    const modalTitleEl = document.getElementById('modal-title');
+    const modalHeading = document.getElementById('modal-heading');
+    const modalCommands = document.getElementById('modal-commands');
+    const modalSave = document.getElementById('modal-save');
+    const modalDelete = document.getElementById('modal-delete');
+    const modalCancel = document.getElementById('modal-cancel');
+    const modalClose = document.getElementById('modal-close');
+
+    // Bulk-select UI (optional in the HTML). Guarded with selectUi so the
+    // rest of the app keeps working if these elements are missing.
+    const selectToggle = document.getElementById('select-toggle');
+    const selectBar = document.getElementById('select-bar');
+    const selectAllInput = document.getElementById('select-all');
+    const selectInfo = document.getElementById('select-info');
+    const deleteSelectedBtn = document.getElementById('delete-selected');
+    const selectCancel = document.getElementById('select-cancel');
+    const selectUi = !!(selectToggle && selectBar && selectAllInput && selectInfo && deleteSelectedBtn && selectCancel);
+
+    if (!content || !searchInput || !searchCount || !editorModal ||
+        !modalHeading || !modalCommands || !modalSave || !modalDelete) {
+        console.error('Required elements not found', { content, searchInput, searchCount, editorModal });
+        return;
+    }
+
+    let modalMode = 'add';
+    let modalKey = null;
+    let modalBlockIndex = null;
+    let modalTargetRowId = null;
+
+    // ------------------------------------------------------------------
+    // Copy buttons + command id badges (one set per command row)
+    // ------------------------------------------------------------------
+    function attachCopyButton(row) {
+        let btn = row.querySelector('.copy-btn');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.className = 'copy-btn';
+            btn.type = 'button';
+            btn.innerHTML = copyIcon;
+            btn.setAttribute('tabindex', '0');
+            btn.setAttribute('aria-label', 'Copy command to clipboard');
+            row.appendChild(btn);
+        }
+        // onclick (property) so re-inits never stack listeners.
+        btn.onclick = async (e) => {
+            e.preventDefault();
+            await copyText(getRowCommandText(row));
+            btn.innerHTML = checkIcon;
+            btn.classList.add('copied');
+            setTimeout(() => {
+                btn.innerHTML = copyIcon;
+                btn.classList.remove('copied');
+            }, 1600);
+            // بدون نیاز به کلیک موس، فوکوس به جستجو برمی‌گردد تا بتوان
+            // بلافاصله تایپ کرد یا Backspace زد.
+            searchInput.focus();
+        };
+    }
+
+    function ensureCopyButtons(root = content) {
+        root.querySelectorAll('.cmd-row').forEach(attachCopyButton);
+    }
+
+    function ensureCommandIdBadges(root = content) {
+        root.querySelectorAll('.cmd-row').forEach(row => {
+            if (row.querySelector('.cmd-id')) return;
+            const chip = document.createElement('span');
+            chip.className = 'cmd-id';
+            row.insertBefore(chip, row.firstChild);
+        });
+    }
+
+    function setUnitVisible(unit, visible) {
+        const display = visible ? '' : 'none';
+        if (unit.heading) unit.heading.style.display = display;
+        for (const el of unit.body) el.style.display = display;
+    }
+
+    // Is this element (or one of its ancestors up to #content) hidden by us?
+    // A `.code-block.collapsed` counts as hidden so the copy buttons inside a
+    // folded section drop out of Tab / arrow navigation.
+    function isActuallyVisible(el) {
+        let node = el;
+        while (node && node !== content) {
+            if (node.style && node.style.display === 'none') return false;
+            if (node.classList && node.classList.contains('code-block')
+                && node.classList.contains('collapsed')) return false;
+            node = node.parentElement;
+        }
+        return true;
+    }
+
+    function getVisibleCopyButtons() {
+        return Array.from(content.querySelectorAll('.copy-btn')).filter(isActuallyVisible);
+    }
+
+    // ------------------------------------------------------------------
+    // Section discovery (generic)
+    // ------------------------------------------------------------------
+    // Text of a body element excluding its id badge / copy button, so numeric
+    // ids never leak into (and pollute) text searches or id disambiguation.
+    function codeBlockText(el) {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll('.cmd-id, .copy-btn').forEach(n => n.remove());
+        return (clone.textContent || '').replace(/\s+/g, ' ').toLowerCase();
+    }
+
+    function isHeading(el) {
+        return HEADING_RE.test(el.tagName);
+    }
+
+    function hasDirectText(el) {
+        for (const node of el.childNodes) {
+            if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() !== '') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function collectUnits(root) {
+        const units = [];
+        let current = null;
+
+        const ensureCurrent = (el) => {
+            if (!current) {
+                current = { heading: null, body: [] };
+                units.push(current);
+            }
+            current.body.push(el);
+        };
+
+        const visit = (el) => {
+            if (isHeading(el)) {
+                current = { heading: el, body: [] };
+                units.push(current);
+                return;
+            }
+            // .code-block is the atomic body element of a section.
+            if (el.classList && el.classList.contains('code-block')) {
+                ensureCurrent(el);
+                return;
+            }
+            if (ATOMIC_TAGS.has(el.tagName)) {
+                ensureCurrent(el);
+                return;
+            }
+            if (hasDirectText(el)) {
+                ensureCurrent(el);
+                return;
+            }
+            for (const child of el.children) {
+                visit(child);
+            }
+        };
+
+        for (const child of root.children) {
+            visit(child);
+        }
+        return units;
+    }
+
+    // ------------------------------------------------------------------
+    // Alphabetical sorting (sections stay ordered by title)
+    // ------------------------------------------------------------------
+    function compareSectionTitles(a, b) {
+        return String(a).localeCompare(String(b), undefined, {
+            sensitivity: 'base',
+            numeric: true
+        });
+    }
+
+    function reorderSections() {
+        const units = collectUnits(content);
+        const sorted = units
+            .map(u => ({
+                heading: u.heading,
+                body: u.body,
+                title: u.heading ? u.heading.textContent.trim() : ''
+            }))
+            .sort((a, b) => compareSectionTitles(a.title, b.title));
+
+        units.forEach(u => {
+            if (u.heading) u.heading.remove();
+            u.body.forEach(el => el.remove());
+        });
+
+        const frag = document.createDocumentFragment();
+        sorted.forEach(u => {
+            if (u.heading) frag.appendChild(u.heading);
+            u.body.forEach(el => frag.appendChild(el));
+        });
+        content.appendChild(frag);
+    }
+
+    function slugify(text) {
+        return String(text).toLowerCase()
+            .replace(/[^a-z0-9\u0600-\u06FF]+/g, '-')
+            .replace(/^-+|-+$/g, '') || 'section';
+    }
+
+    function assignSectionKeys() {
+        const units = collectUnits(content);
+        const seen = new Map();
+        units.forEach(unit => {
+            const headingText = unit.heading ? unit.heading.textContent.trim() : '(untitled)';
+            // Sections the user created keep their stable storage key even when
+            // the title is edited, so edits/deletes always match the store.
+            const existingKey = unit.heading
+                ? unit.heading.getAttribute('data-section-key')
+                : (unit.body[0] ? unit.body[0].getAttribute('data-section-key') : null);
+            if (existingKey && existingKey.startsWith('custom-')) {
+                if (unit.heading) unit.heading.setAttribute('data-section-key', existingKey);
+                unit.body.forEach(el => el.setAttribute('data-section-key', existingKey));
+                return;
+            }
+            const slug = slugify(headingText);
+            const n = seen.get(slug) || 0;
+            seen.set(slug, n + 1);
+            const key = n === 0 ? `static-${slug}` : `static-${slug}-${n + 1}`;
+            if (unit.heading) unit.heading.setAttribute('data-section-key', key);
+            unit.body.forEach(el => el.setAttribute('data-section-key', key));
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Command ids: a global sequential counter, reset from 1 every time the
+    // content is re-sorted, so deleted numbers are reused and the visible
+    // order always matches id order (first row = id 1). No title prefix.
+    // ------------------------------------------------------------------
+    function assignCommandIds() {
+        const units = collectUnits(content);
+        let i = 1;
+        units.forEach(unit => {
+            unit.body.forEach(el => {
+                if (!el.classList || !el.classList.contains('code-block')) return;
+                // Only command rows carry ids; '---' dividers are addressable
+                // through select mode instead, so they never consume a number.
+                el.querySelectorAll('.cmd-row').forEach(row => {
+                    const id = String(i);
+                    row.setAttribute('data-command-id', id);
+                    row.id = `cmd-${id}`;
+                    const chip = row.querySelector('.cmd-id');
+                    if (chip) chip.textContent = id;
+                    i++;
+                });
+            });
+        });
+    }
+
+    // A divider needs no id badge - just its visible line span. (Selection
+    // and deletion of dividers happen through select mode checkboxes.)
+    function decorateRowDivider(divider) {
+        let line = divider.querySelector('.divider-line');
+        if (!line) {
+            line = document.createElement('span');
+            line.className = 'divider-line';
+            divider.appendChild(line);
+        }
+    }
+
+    // Resolve a command-id query from the search box. An id is written exactly
+    // like the id chips of the content: '#' IMMEDIATELY followed by its number
+    // (e.g. "#10"). Because "# 10" (hash + space) is this project's comment
+    // syntax, the digits must touch the hash - that also tells an id query
+    // apart from a plain text search (e.g. "10" matching "a= 10"). A plain
+    // number that isn't a live text match can still be used by the
+    // Ctrl+E / Enter handlers.
+    function parseIdQuery(value) {
+        const q = String(value || '').trim();
+        if (!q) return null;
+        const m = /^#(\d+)$/.exec(q);
+        return m ? m[1] : null;
+    }
+
+    // Same id syntax while the user is STILL TYPING: returns the digits that
+    // follow a leading '#' ('#' -> '', '#1' -> '1', '#10' -> '10', ...) or
+    // null when the query is a normal text search. Thanks to the (\d*) the
+    // match is only there when '#' is immediately followed by digits, so a
+    // '#comment text' / '# فایل' style query keeps searching text as before.
+    function parseIdPrefixQuery(value) {
+        const q = String(value || '').trim();
+        const m = /^#(\d*)$/.exec(q);
+        return m ? m[1] : null;
+    }
+
+    function getBlockById(value) {
+        const id = parseIdQuery(value);
+        if (!id) return null;
+        return content.querySelector(`.cmd-row[data-command-id="${id}"]`);
+    }
+
+    // Plain numbers: only treat them as command ids when they are candidates
+    // AND the query does not match any visible content text (otherwise "10"
+    // is a text search for "a= 10"). The exact/named ids are handled by
+    // getBlockById via the "#" prefix, so here we intentionally match a row
+    // whose numeric id is NOT already present in the text.
+    function findRowForStat(value) {
+        const q = String(value || '').trim();
+        if (!/^\d+$/.test(q)) return null;
+        const row = content.querySelector(`.cmd-row[data-command-id="${q}"]`);
+        if (!row) return null;
+        // If this same number appears in any visible content text (badges
+        // excluded), treat it as a text search, not an id.
+        const units = collectUnits(content)
+            .filter(u => isActuallyVisible(u.heading) || u.body.some(el => isActuallyVisible(el)));
+        const textBlob = units.map(u => u.body.map(codeBlockText).join(' ')).join(' ').toLowerCase();
+        if (textBlob.includes(q)) return null;
+        return row;
+    }
+
+    // Ctrl+E support for typing a plain id without the '#' prefix: resolve,
+    // but only when the number is not also live matching text.
+    function resolveIdForEdit(value) {
+        const byPrefix = getBlockById(value);
+        if (byPrefix) return byPrefix;
+        return findRowForStat(value);
+    }
+
+    // ------------------------------------------------------------------
+    // Rendering & normalisation
+    // ------------------------------------------------------------------
+    function normalizeCodeBlocks(root = content) {
+        root.querySelectorAll('.cmd-row').forEach(row => {
+            const lines = row.querySelector('.cmd-lines');
+            if (lines) lines.innerHTML = buildCommandHtml(lines.textContent);
+        });
+        ensureRowDividers(root);
+    }
+
+    // '---' on its own line inside a section renders as a thin divider with a
+    // small vertical gap, letting the user group the commands of ONE section
+    // into visual sub-groups (e.g. commands 1-3 above the line, 4-7 below it).
+    // The divider is a real element, so it survives re-sorts, edits and
+    // re-renders; it never gets a copy button, an id or a checkbox.
+    function ensureRowDividers(root = content) {
+        root.querySelectorAll('.cmd-row').forEach(row => {
+            const lines = row.querySelector('.cmd-lines');
+            if (!lines) return;
+            if (String(lines.textContent).trim() !== '---') return;
+            const divider = document.createElement('div');
+            divider.className = 'row-divider';
+            decorateRowDivider(divider);
+            row.replaceWith(divider);
+        });
+    }
+
+    // Converts any legacy <pre> blocks into the .code-block/.cmd-row layout.
+    function migrateLegacyPres() {
+        const pres = Array.from(content.querySelectorAll('pre'));
+        if (pres.length === 0) return;
+        pres.forEach(pre => {
+            const code = pre.querySelector('code');
+            const text = code ? code.textContent : pre.textContent;
+            const key = pre.getAttribute('data-section-key');
+            const block = document.createElement('div');
+            block.className = 'code-block';
+            const row = document.createElement('div');
+            row.className = 'cmd-row';
+            const lines = document.createElement('span');
+            lines.className = 'cmd-lines';
+            lines.textContent = text;
+            row.appendChild(lines);
+            block.appendChild(row);
+            if (key) {
+                block.setAttribute('data-section-key', key);
+                row.setAttribute('data-section-key', key);
+            }
+            pre.replaceWith(block);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Match highlighting
+    // ------------------------------------------------------------------
+    function clearHighlights() {
+        document.querySelectorAll('mark.search-hit').forEach(m => {
+            const parent = m.parentNode;
+            parent.replaceChild(document.createTextNode(m.textContent), m);
+            parent.normalize();
+        });
+    }
+
+    function highlightTextInElements(elements, term) {
+        elements.forEach(root => {
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            const textNodes = [];
+            while (walker.nextNode()) {
+                const n = walker.currentNode;
+                if (!n.nodeValue || n.nodeValue.trim() === '') continue;
+                textNodes.push(n);
+            }
+            textNodes.forEach(node => {
+                const lower = node.nodeValue.toLowerCase();
+                let idx = lower.indexOf(term);
+                if (idx === -1) return;
+                const frag = document.createDocumentFragment();
+                let last = 0;
+                while (idx !== -1) {
+                    if (idx > last) {
+                        frag.appendChild(document.createTextNode(node.nodeValue.slice(last, idx)));
+                    }
+                    const mark = document.createElement('mark');
+                    mark.className = 'search-hit';
+                    mark.textContent = node.nodeValue.slice(idx, idx + term.length);
+                    frag.appendChild(mark);
+                    last = idx + term.length;
+                    idx = lower.indexOf(term, last);
+                }
+                if (last < node.nodeValue.length) {
+                    frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+                }
+                node.parentNode.replaceChild(frag, node);
+            });
+        });
+    }
+
+    // Search uses the same representation for user input and document text:
+    // case is ignored and common visual separators become spaces.
+    function normalizeSearchText(value) {
+        return String(value || '')
+            .toLocaleLowerCase()
+            .replace(/[-._\s\\/]+/g, ' ')
+            .trim();
+    }
+
+    function getSearchTokens(value) {
+        const normalized = normalizeSearchText(value);
+        return normalized ? normalized.split(' ').filter(Boolean) : [];
+    }
+
+    function matchesSearchTokens(text, tokens) {
+        if (tokens.length === 0) return true;
+        const availableTokens = getSearchTokens(text);
+        // AND semantics: every query token must appear inside a document token.
+        // Substring matching (not just prefix) lets the user search for any
+        // part of a word - e.g. "tree" finds "worktree" and "ignore" finds
+        // "gitignore" - consistent with the substring highlighting already
+        // used. Words typed from their start keep matching too, so the live
+        // narrowing stays responsive while a query is being typed.
+        return tokens.every(token => availableTokens
+            .some(availableToken => availableToken.includes(token)));
+    }
+
+    // Which command rows inside one section match the live query?
+    //
+    // Row-level semantics (so a 1000-command section only shows the rows the
+    // user actually asked for). A query token matches a row when ANY of:
+    // 1. Some token of the row's own text contains it  -> "igno" finds only
+    //    the gitignore row inside the "git" section.
+    // 2. Some token of the section TITLE contains it   -> typing a full title
+    //    word ("git") keeps every row of that section visible, as before.
+    // 3. The token STARTS with a full title word and the row contains that
+    //    word -> the compound-word rule: "gitig" = title "git" + fragment
+    //    "ig", so all git commands stay visible; but "igno" (which contains
+    //    no title word) filters down to just the gitignore row.
+    function queryTokenMatchesRow(token, rowTokens, titleTokens) {
+        if (rowTokens.some(rt => rt.includes(token))) return true;
+        if (titleTokens.some(tt => tt.includes(token))) return true;
+        const head = titleTokens.find(tt => token.startsWith(tt) && token.length > tt.length);
+        if (head && rowTokens.some(rt => rt.includes(head))) return true;
+        return false;
+    }
+
+    function getMatchingRowsInUnit(unit, tokens) {
+        if (tokens.length === 0) {
+            return Array.from(content.querySelectorAll('.cmd-row'));
+        }
+        const titleTokens = getSearchTokens(unit.heading ? unit.heading.textContent : '');
+        const matches = [];
+        unit.body.forEach(el => {
+            if (!el.classList || !el.classList.contains('code-block')) return;
+            el.querySelectorAll('.cmd-row').forEach(row => {
+                const rowTokens = getSearchTokens(codeBlockText(row));
+                if (tokens.every(token => queryTokenMatchesRow(token, rowTokens, titleTokens))) {
+                    matches.push(row);
+                }
+            });
+        });
+        return matches;
+    }
+
+    // ------------------------------------------------------------------
+    // Filtering (smart search): matches titles, commands AND comments
+    // ------------------------------------------------------------------
+    function filterItems(query) {
+        clearHighlights();
+        // clear any previous id-target highlight
+        content.querySelectorAll('.cmd-row.id-target-highlight').forEach(r => r.classList.remove('id-target-highlight'));
+        const units = collectUnits(content);
+        const q = (query || '').trim();
+
+        // Search lifecycle for the auto-expand feature: the first real keystroke
+        // snapshots every section's collapsed state; when the query disappears
+        // (or resolves to nothing) the sections all go back to it.
+        if (q === '') {
+            restoreCollapsedSnapshot();
+        } else if (!searchCollapsedSnapshot) {
+            captureCollapsedSnapshot();
+        }
+
+        // Live id-search mode: '#' immediately followed by digits ("#145") is
+        // the id syntax of the content, so only the sections that contain a
+        // matching id stay visible and every matching row is highlighted - the
+        // user can confirm the exact command before pressing Enter / Ctrl+E.
+        // '#' alone keeps EVERYTHING visible (nothing is hidden, the user is
+        // simply still typing the number). A '#' that is NOT directly followed
+        // by digits (e.g. "# comment text") is not an id at all, so it falls
+        // through to the normal text search below.
+        const idPrefix = parseIdPrefixQuery(q);
+        if (idPrefix !== null) {
+            const rest = idPrefix;
+            // Leaving a text query for id mode: undo any row hiding from it.
+            content.querySelectorAll('.cmd-row').forEach(row => { row.style.display = ''; });
+            if (rest === '') {
+                units.forEach(u => {
+                    setUnitVisible(u, true);
+                    applySnapshotToUnit(u);
+                });
+                searchCount.textContent = `${units.length} / ${units.length} sections`;
+                updateCollapseAllButton();
+                console.log('filterItems (id mode, waiting for number)', JSON.stringify(q));
+                return;
+            }
+            let visible = 0;
+            let firstRow = null;
+            units.forEach(u => {
+                let unitMatch = false;
+                u.body.forEach(el => {
+                    if (!el.classList || !el.classList.contains('code-block')) return;
+                    el.querySelectorAll('.cmd-row').forEach(row => {
+                        const id = row.getAttribute('data-command-id') || '';
+                        if (id.startsWith(rest)) {
+                            unitMatch = true;
+                            row.classList.add('id-target-highlight');
+                            if (!firstRow) firstRow = row;
+                        }
+                    });
+                });
+                setUnitVisible(u, unitMatch);
+                if (unitMatch) {
+                    applyCollapsedClass(unitKey(u), false);
+                    visible++;
+                } else {
+                    applySnapshotToUnit(u);
+                }
+            });
+            searchCount.textContent = `${visible} / ${units.length} sections`;
+            updateCollapseAllButton();
+            console.log('filterItems (id mode)', JSON.stringify(q), 'visible:', visible);
+            if (firstRow) {
+                try { firstRow.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+            }
+            return;
+        }
+
+        const searchTokens = getSearchTokens(q);
+        let visible = 0;
+
+        if (searchTokens.length === 0) {
+            units.forEach(u => {
+                setUnitVisible(u, true);
+                applySnapshotToUnit(u);
+            });
+            // Reset any row hiding left over from a previous (narrower) query.
+            content.querySelectorAll('.cmd-row').forEach(row => { row.style.display = ''; });
+            visible = units.length;
+        } else {
+            units.forEach(u => {
+                // First pass: which of this section's ROWS match? A section
+                // is shown when at least one row matches (or its title alone
+                // matches every token); within it only the matched rows stay
+                // visible, so big sections don't flood the results.
+                const matchedRows = getMatchingRowsInUnit(u, searchTokens);
+                const titleOnlyMatch = matchedRows.length === 0 && matchesSearchTokens(
+                    u.heading ? u.heading.textContent : '', searchTokens);
+                const unitMatches = matchedRows.length > 0 || titleOnlyMatch;
+                setUnitVisible(u, unitMatches);
+                if (unitMatches) {
+                    // A matched section is force-expanded so its highlighted
+                    // commands are actually visible while the search is live.
+                    applyCollapsedClass(unitKey(u), false);
+                    // Second pass: hide the rows that did not match (display
+                    // only - never removed, so editing/ids/copy are intact).
+                    // A title-only match keeps the whole section visible.
+                    u.body.forEach(el => {
+                        if (!el.classList || !el.classList.contains('code-block')) return;
+                        el.querySelectorAll('.cmd-row').forEach(row => {
+                            row.style.display =
+                                (titleOnlyMatch || matchedRows.includes(row)) ? '' : 'none';
+                        });
+                    });
+                    const targets = [];
+                    if (u.heading) targets.push(u.heading);
+                    targets.push(...u.body);
+                    searchTokens.forEach(token => highlightTextInElements(targets, token));
+                    visible++;
+                } else {
+                    // As the query narrows down, sections that drop out of the
+                    // results return to the state they had before the search.
+                    applySnapshotToUnit(u);
+                }
+            });
+        }
+
+        searchCount.textContent = `${visible} / ${units.length} sections`;
+        updateCollapseAllButton();
+        console.log('filterItems', JSON.stringify(q), 'visible:', visible, 'of', units.length);
+    }
+    window.filterItems = filterItems; // expose for console tests
+
+    // ------------------------------------------------------------------
+    // Copy-button keyboard navigation
+    // ------------------------------------------------------------------
+    function focusFirstCopyButton() {
+        const btns = getVisibleCopyButtons();
+        if (btns.length > 0) btns[0].focus();
+    }
+
+    // The copy button whose command row has the most highlighted match words
+    // for the current live search - i.e. the single most relevant result. It
+    // is what Enter in the search box focuses first: the user lands straight
+    // on the command with the highest overlap instead of having to Tab there.
+    // Ties go to the first such row in document order; a query with no
+    // highlighted matches (e.g. empty search) yields the first visible button.
+    function findBestMatchCopyButton() {
+        const btns = getVisibleCopyButtons();
+        if (btns.length === 0) return null;
+        let best = btns[0];
+        let bestScore = -1;
+        btns.forEach(btn => {
+            const row = btn.closest('.cmd-row');
+            // Only the command's own text counts, so a heading match that is
+            // shared by every row of a section never skews the ranking.
+            const score = row ? row.querySelectorAll('mark.search-hit').length : 0;
+            if (score > bestScore) {
+                bestScore = score;
+                best = btn;
+            }
+        });
+        return best;
+    }
+
+    function moveCopyFocus(step) {
+        const btns = getVisibleCopyButtons();
+        if (btns.length === 0) return;
+        const active = document.activeElement;
+        const idx = btns.indexOf(active);
+        if (idx === -1) {
+            (step === 1 ? btns[0] : btns[btns.length - 1]).focus();
+        } else {
+            btns[(idx + step + btns.length) % btns.length].focus();
+        }
+    }
+
+    function getTabTargets() {
+        // Tab cycles through the copy buttons in document order; a section
+        // that is collapsed has no visible copy buttons, so its title becomes
+        // the Tab target instead (so Alt+ArrowRight can expand it again).
+        // The collapsed title is ALWAYS a valid focus target even though its
+        // code block is display:none - the user must SEE where the focus is,
+        // and a strong CSS :focus highlight on the title provides that.
+        // In select mode the row checkboxes are cycled together as before.
+        const sel = isSelectMode()
+            ? '.select-checkbox, .copy-btn, h2.collapsed'
+            : '.copy-btn, h2.collapsed';
+        return Array.from(content.querySelectorAll(sel)).filter(el =>
+            HEADING_RE.test(el.tagName) ? true : isActuallyVisible(el));
+    }
+
+    function handleTab(shiftKey) {
+        const targets = getTabTargets();
+        const active = document.activeElement;
+
+        if (!shiftKey && active === searchInput) {
+            const idQuery = parseIdQuery(searchInput.value);
+            if (idQuery !== null) {
+                const targetRow = content.querySelector(`.cmd-row[data-command-id="${idQuery}"]`);
+                if (targetRow) {
+                    const btn = targetRow.querySelector('.copy-btn');
+                    if (btn && isActuallyVisible(btn)) {
+                        try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                        btn.focus();
+                        return;
+                    }
+                }
+            }
+        }
+
+        if (targets.length === 0) return;
+        const idx = targets.indexOf(active);
+
+        if (shiftKey) {
+            if (idx <= 0) {
+                searchInput.focus();
+            } else {
+                targets[idx - 1].focus();
+            }
+        } else {
+            if (idx === -1) {
+                targets[0].focus();
+            } else {
+                targets[(idx + 1) % targets.length].focus();
+            }
+        }
+    }
+
+    function moveSelectCheckboxFocus(step) {
+        const boxes = Array.from(
+            content.querySelectorAll('.cmd-row .select-checkbox, .row-divider .select-checkbox')
+        ).filter(isActuallyVisible);
+        if (boxes.length === 0) return;
+        const active = document.activeElement;
+        const idx = boxes.indexOf(active);
+        if (idx === -1) {
+            (step === 1 ? boxes[0] : boxes[boxes.length - 1]).focus();
+        } else {
+            boxes[(idx + step + boxes.length) % boxes.length].focus();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // "Type anywhere" behaviour
+    // ------------------------------------------------------------------
+    function isTypingKey(e) {
+        return !e.ctrlKey && !e.altKey && !e.metaKey
+            && typeof e.key === 'string' && e.key.length === 1;
+    }
+
+    function isCompositionKey(e) {
+        return e.isComposing || e.key === 'Process' || e.key === 'Dead';
+    }
+
+    function insertIntoSearch(char) {
+        searchInput.focus();
+        const start = searchInput.selectionStart ?? searchInput.value.length;
+        const end = searchInput.selectionEnd ?? searchInput.value.length;
+        searchInput.value = searchInput.value.slice(0, start) + char + searchInput.value.slice(end);
+        const pos = start + char.length;
+        searchInput.setSelectionRange(pos, pos);
+        filterItems(searchInput.value);
+    }
+
+    function clearSearch() {
+        searchInput.value = '';
+        filterItems('');
+        searchInput.focus();
+    }
+
+    // Modify the search box as if Backspace was pressed inside it, without
+    // requiring the input itself to be focused.
+    function backspaceInSearch() {
+        const start = searchInput.selectionStart ?? searchInput.value.length;
+        const end = searchInput.selectionEnd ?? searchInput.value.length;
+        if (end > start) {
+            searchInput.value = searchInput.value.slice(0, start) + searchInput.value.slice(end);
+            searchInput.setSelectionRange(start, start);
+        } else if (start > 0) {
+            searchInput.value = searchInput.value.slice(0, start - 1) + searchInput.value.slice(start);
+            searchInput.setSelectionRange(start - 1, start - 1);
+        }
+        filterItems(searchInput.value);
+        searchInput.focus();
+    }
+
+    // ------------------------------------------------------------------
+    // Open / close the search bar itself
+    // ------------------------------------------------------------------
+    // Closing only hides the bar (the query is cleared by clearSearch() first,
+    // so the content is always left in its plain "everything visible" state).
+    // Typing anywhere, Backspace or Ctrl+/ brings the bar straight back.
+    function isSearchBarOpen() {
+        return !searchBar.classList.contains('hidden');
+    }
+
+    function openSearchBar() {
+        searchBar.classList.remove('hidden');
+        searchInput.focus();
+    }
+
+    function closeSearchBar() {
+        searchBar.classList.add('hidden');
+        searchInput.blur();
+    }
+
+    // ------------------------------------------------------------------
+    // Section / command management (add / edit / delete + persistence)
+    // ------------------------------------------------------------------
+    // One <div class="code-block"> per section, each command its own row.
+    function renderSection(key, title, blocks) {
+        const frag = document.createDocumentFragment();
+        const h = document.createElement('h2');
+        h.textContent = title;
+        h.setAttribute('data-section-key', key);
+        addSectionHeaderChrome(h);
+        frag.appendChild(h);
+
+        const block = document.createElement('div');
+        block.className = 'code-block';
+        block.setAttribute('data-section-key', key);
+
+        (blocks || []).forEach(command => {
+            // '---' on its own line = the H Line divider between sub-groups.
+            // It gets its select-mode checkbox from ensureRowCheckboxes.
+            if (String(command).trim() === '---') {
+                const divider = document.createElement('div');
+                divider.className = 'row-divider';
+                decorateRowDivider(divider);
+                block.appendChild(divider);
+                return;
+            }
+            const row = document.createElement('div');
+            row.className = 'cmd-row';
+            row.setAttribute('data-section-key', key);
+
+            const lines = document.createElement('span');
+            lines.className = 'cmd-lines';
+            lines.innerHTML = buildCommandHtml(command);
+
+            row.appendChild(lines);
+            attachCopyButton(row);
+            block.appendChild(row);
+        });
+
+        frag.appendChild(block);
+        return frag;
+    }
+
+    function replaceSectionDom(key, model) {
+        const els = Array.from(content.querySelectorAll(`[data-section-key="${key}"]`));
+        if (els.length === 0) return null;
+        const first = els[0];
+        const frag = renderSection(key, model.title, model.commands);
+        first.parentNode.insertBefore(frag, first);
+        els.forEach(el => el.remove());
+        return frag.querySelector('h2');
+    }
+
+    // localStorage with an in-memory fallback (e.g. file:// with blocked storage)
+    let memoryStore = null;
+    function getStore() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            return raw ? (JSON.parse(raw) || {}) : {};
+        } catch (err) {
+            return memoryStore || (memoryStore = {});
+        }
+    }
+    function saveStore(store) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+        } catch (err) {
+            memoryStore = store;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Collapse / expand sections
+    // ------------------------------------------------------------------
+    // Makes a section title focusable (without putting it in the native tab
+    // order) and appends the tiny purple caret used as a focus / collapsed
+    // indicator. The caret is an SVG with no text nodes, so title text,
+    // searching and slug generation are unaffected.
+    function addSectionHeaderChrome(h) {
+        if (!h) return;
+        if (!h.hasAttribute('tabindex')) h.setAttribute('tabindex', '-1');
+        if (!h.querySelector('.collapse-icon')) {
+            const icon = document.createElement('span');
+            icon.className = 'collapse-icon';
+            icon.setAttribute('aria-hidden', 'true');
+            icon.innerHTML = sectionCaretIcon;
+            h.appendChild(icon);
+        }
+    }
+
+    function ensureSectionHeaderChromeAll(root = content) {
+        root.querySelectorAll('h2[data-section-key]').forEach(addSectionHeaderChrome);
+    }
+
+    function getHeadingByKey(key) {
+        return content.querySelector(`h2[data-section-key="${key}"]`);
+    }
+
+    function isSectionCollapsed(key) {
+        const h = getHeadingByKey(key);
+        return !!(h && h.classList.contains('collapsed'));
+    }
+
+    // Persist the folded-section keys so the layout survives a reload. Keys
+    // are recomputed from the live DOM each time, so deleted/renamed sections
+    // clean themselves up naturally.
+    function persistCollapsedKeys() {
+        const store = getStore();
+        store.collapsed = Array.from(content.querySelectorAll('h2.collapsed'))
+            .map(h => h.getAttribute('data-section-key'))
+            .filter(Boolean);
+        saveStore(store);
+    }
+
+    // Keep the header toggle button in sync: it shows a "hide all" icon while
+    // anything is expanded and flips to a "show all" icon when everything is
+    // already folded.
+    function updateCollapseAllButton() {
+        const btn = document.getElementById('collapse-all-btn');
+        if (!btn) return;
+        const total = content.querySelectorAll('h2[data-section-key]').length;
+        if (total === 0) {
+            btn.disabled = true;
+            return;
+        }
+        const folded = content.querySelectorAll('h2.collapsed').length;
+        if (folded === total) {
+            btn.title = 'Show all sections (Ctrl+Alt+ArrowRight)';
+            btn.setAttribute('aria-label', 'Show all sections');
+            btn.innerHTML = expandAllIcon;
+        } else {
+            btn.title = 'Hide all commands (Ctrl+Alt+ArrowLeft)';
+            btn.setAttribute('aria-label', 'Hide all commands');
+            btn.innerHTML = collapseAllIcon;
+        }
+    }
+
+    // Fold/unfold one section. `option.focus`: when collapsing, focus lands on
+    // the title (so the next Tab / Ctrl+ArrowRight still finds the section);
+    // when expanding, focus jumps to the section's first copy button.
+    // Toggle the collapsed class on a section without touching persistence or
+    // focus. Internal helper shared by collapse/expand and by the live-search
+    // auto-expand logic.
+    function applyCollapsedClass(key, collapsed) {
+        if (!key) return;
+        content.querySelectorAll(`[data-section-key="${key}"]`).forEach(el => {
+            if (el.classList.contains('code-block')) el.classList.toggle('collapsed', collapsed);
+            else if (HEADING_RE.test(el.tagName)) el.classList.toggle('collapsed', collapsed);
+        });
+    }
+
+    function setSectionCollapsed(key, collapsed, opts = {}) {
+        if (!key) return;
+        applyCollapsedClass(key, collapsed);
+        persistCollapsedKeys();
+        updateCollapseAllButton();
+        if (opts.focus) {
+            const h = getHeadingByKey(key);
+            if (!collapsed) {
+                const btn = content.querySelector(
+                    `[data-section-key="${key}"].code-block .copy-btn`
+                );
+                if (btn && isActuallyVisible(btn)) btn.focus();
+                else if (h) h.focus();
+            } else if (h) {
+                h.focus();
+            }
+        }
+    }
+
+    function collapseSection(key) { setSectionCollapsed(key, true, { focus: true }); }
+    function expandSection(key) { setSectionCollapsed(key, false, { focus: true }); }
+
+    function toggleSection(key) {
+        if (key) setSectionCollapsed(key, !isSectionCollapsed(key), { focus: true });
+    }
+
+    function collapseAllSections() {
+        content.querySelectorAll('h2[data-section-key]').forEach(h => {
+            setSectionCollapsed(h.getAttribute('data-section-key'), true);
+        });
+        searchInput.focus();
+    }
+
+    function expandAllSections() {
+        content.querySelectorAll('h2[data-section-key]').forEach(h => {
+            setSectionCollapsed(h.getAttribute('data-section-key'), false);
+        });
+        searchInput.focus();
+    }
+
+    function toggleAllSections() {
+        const total = content.querySelectorAll('h2[data-section-key]').length;
+        const folded = content.querySelectorAll('h2.collapsed').length;
+        if (folded === total) expandAllSections();
+        else collapseAllSections();
+    }
+
+    // Restore the saved folded state after any content change / re-render.
+    function applyCollapsedFromStore() {
+        const folded = new Set(getStore().collapsed || []);
+        content.querySelectorAll('h2[data-section-key]').forEach(h => {
+            const key = h.getAttribute('data-section-key');
+            if (folded.has(key)) setSectionCollapsed(key, true);
+        });
+        updateCollapseAllButton();
+    }
+
+    // ------------------------------------------------------------------
+    // Live-search auto-expand
+    // ------------------------------------------------------------------
+    // While the user is typing a real query, the sections that match are
+    // force-expanded so the highlighted matches are actually visible. Sections
+    // that stop matching go back to the state they had *before* the search
+    // started, and when the search is cleared every section returns to that
+    // state. All of this is transient - the persisted collapsed state in
+    // localStorage is never modified.
+    let searchCollapsedSnapshot = null;
+
+    function unitKey(unit) {
+        if (unit.heading) return unit.heading.getAttribute('data-section-key');
+        return unit.body.length ? unit.body[0].getAttribute('data-section-key') : null;
+    }
+
+    // First real keystroke: remember every section's collapsed state.
+    function captureCollapsedSnapshot() {
+        searchCollapsedSnapshot = {};
+        content.querySelectorAll('h2[data-section-key]').forEach(h => {
+            const key = h.getAttribute('data-section-key');
+            if (key) searchCollapsedSnapshot[key] = h.classList.contains('collapsed');
+        });
+    }
+
+    // Put one section back to its pre-search collapsed state (used for the
+    // sections that drop out of the results as the query narrows down).
+    function applySnapshotToUnit(unit) {
+        const snap = searchCollapsedSnapshot;
+        const key = unitKey(unit);
+        if (!snap || !key || !(key in snap)) return;
+        applyCollapsedClass(key, snap[key]);
+    }
+
+    // Search ended / cleared: restore every section to its pre-search state.
+    function restoreCollapsedSnapshot() {
+        const snap = searchCollapsedSnapshot;
+        if (!snap) return;
+        content.querySelectorAll('h2[data-section-key]').forEach(h => {
+            const key = h.getAttribute('data-section-key');
+            if (key && key in snap) applyCollapsedClass(key, snap[key]);
+        });
+        searchCollapsedSnapshot = null;
+        updateCollapseAllButton();
+    }
+
+    function applyStoreToDom() {
+        const store = getStore();
+        const deleted = new Set(store.deleted || []);
+        const edits = store.edits || {};
+        const customKeys = new Set((store.custom || []).map(m => m.key));
+
+        // Remove sections the user deleted (they still exist in the HTML file).
+        content.querySelectorAll('[data-section-key]').forEach(el => {
+            if (deleted.has(el.getAttribute('data-section-key'))) el.remove();
+        });
+
+        // Replace edited static sections (custom ones are handled below).
+        // A renamed section's stored key no longer matches the HTML-derived
+        // key, so fall back to matching by the edited title.
+        Object.entries(edits).forEach(([key, model]) => {
+            if (deleted.has(key) || customKeys.has(key)) return;
+            let targetKey = key;
+            if (!content.querySelector(`[data-section-key="${key}"]`)) {
+                const h = Array.from(content.querySelectorAll('h2')).find(el =>
+                    el.textContent.trim().toLowerCase() === String(model.title).trim().toLowerCase());
+                if (h) targetKey = h.getAttribute('data-section-key');
+            }
+            replaceSectionDom(targetKey, model);
+        });
+
+        // Append sections the user created, applying any edit for them.
+        (store.custom || []).forEach(model => {
+            if (deleted.has(model.key)) return;
+            const finalModel = edits[model.key] || model;
+            content.appendChild(
+                renderSection(finalModel.key, finalModel.title, finalModel.commands)
+            );
+        });
+    }
+
+    function getSectionModel(key) {
+        const els = Array.from(content.querySelectorAll(`[data-section-key="${key}"]`));
+        let title = '';
+        const commands = [];
+        els.forEach(el => {
+            if (HEADING_RE.test(el.tagName)) {
+                title = el.textContent.trim();
+                return;
+            }
+            if (!el.classList || !el.classList.contains('code-block')) return;
+            // Children in DOM order: command rows AND '---' dividers, so a
+            // re-render (replaceSectionDom) rebuilds the exact same layout,
+            // divider positions included.
+            Array.from(el.children).forEach(child => {
+                if (child.classList && child.classList.contains('row-divider')) {
+                    commands.push('---');
+                    return;
+                }
+                if (!child.classList || !child.classList.contains('cmd-row')) return;
+                const lines = child.querySelector('.cmd-lines');
+                if (lines) commands.push(lines.textContent.replace(/\s+$/, ''));
+            });
+        });
+        return { key, title, commands };
+    }
+
+    function saveModel(key, model) {
+        const store = getStore();
+        const custom = (store.custom || []).find(m => m.key === key);
+        if (custom) {
+            custom.title = model.title;
+            custom.commands = model.commands;
+        } else {
+            store.edits = store.edits || {};
+            store.edits[key] = { title: model.title, commands: model.commands };
+        }
+        saveStore(store);
+    }
+
+    function getActiveSectionKey() {
+        const active = document.activeElement;
+        if (!active || active === searchInput) return null;
+        const el = active.closest('#content [data-section-key]');
+        return el ? el.getAttribute('data-section-key') : null;
+    }
+
+    function highlightActiveSection() {
+        content.querySelectorAll('.active-section').forEach(el => el.classList.remove('active-section'));
+        const key = getActiveSectionKey();
+        if (key) {
+            content.querySelectorAll(`[data-section-key="${key}"]`).forEach(el => el.classList.add('active-section'));
+        }
+    }
+    document.addEventListener('focusin', highlightActiveSection);
+
+    function editBlockAt(row) {
+        const target = row ? row.closest('.cmd-row') : null;
+        const blockEl = target ? target.closest('.code-block') : null;
+        if (!blockEl) return;
+        const key = blockEl.getAttribute('data-section-key');
+        if (!key) return;
+        // The stored model mixes commands with '---' divider entries in DOM
+        // order, so the index must count both.
+        let idx = 0;
+        for (const child of Array.from(blockEl.children)) {
+            if (child === target) break;
+            if (child.classList && (child.classList.contains('cmd-row')
+                || child.classList.contains('row-divider'))) idx++;
+        }
+        if (idx >= getSectionModel(key).commands.length) return;
+        modalTargetRowId = target ? target.getAttribute('data-command-id') : null;
+        openModal('editBlock', key, idx);
+    }
+
+    // ------------------------------------------------------------------
+    // Modal (add section / edit section / edit one command row)
+    // ------------------------------------------------------------------
+    function openModal(mode, key, blockIndex) {
+        modalMode = mode;
+        modalKey = key || null;
+        modalBlockIndex = (blockIndex === undefined || blockIndex === null) ? null : blockIndex;
+
+        if (mode === 'editBlock' && key && modalBlockIndex !== null) {
+            const model = getSectionModel(key);
+            modalHeading.title = 'You can also edit the section title here';
+            modalHeading.value = model.title;
+            modalCommands.value = model.commands[modalBlockIndex] || '';
+            modalTitleEl.textContent = 'Edit command';
+            modalDelete.hidden = false;
+            modalDelete.textContent = 'Delete command';
+        } else {
+            modalHeading.disabled = false;
+            modalCommands.readOnly = false;
+            modalCommands.value = '';
+            if (mode === 'edit' && key) {
+                const model = getSectionModel(key);
+                modalHeading.value = model.title;
+                modalCommands.value = model.commands.join('\n\n');
+                modalTitleEl.textContent = 'Edit section';
+                modalDelete.hidden = false;
+                modalDelete.textContent = 'Delete section';
+            } else {
+                modalHeading.value = '';
+                modalTitleEl.textContent = 'Add new section';
+                modalDelete.hidden = true;
+            }
+        }
+        editorModal.classList.remove('hidden');
+        if (mode === 'editBlock') modalCommands.focus();
+        else modalHeading.focus();
+    }
+
+    function closeModal() {
+        editorModal.classList.add('hidden');
+        openSearchBar();
+
+        let restoredFocus = false;
+        if (modalMode === 'editBlock' && modalTargetRowId) {
+            const row = content.querySelector(`.cmd-row[data-command-id="${modalTargetRowId}"]`);
+            if (row && isActuallyVisible(row)) {
+                const btn = row.querySelector('.copy-btn');
+                if (btn) {
+                    try { btn.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                    btn.focus();
+                    restoredFocus = true;
+                }
+            }
+        } else if (modalMode === 'edit' && modalKey) {
+            const heading = content.querySelector(`h2[data-section-key="${modalKey}"]`);
+            if (heading && isActuallyVisible(heading)) {
+                const firstBtn = content.querySelector(`[data-section-key="${modalKey}"].code-block .copy-btn`);
+                const focusTarget = (firstBtn && isActuallyVisible(firstBtn)) ? firstBtn : heading;
+                try { focusTarget.scrollIntoView({ block: 'nearest' }); } catch (e) { /* noop */ }
+                focusTarget.focus();
+                restoredFocus = true;
+            }
+        }
+
+        if (!restoredFocus) {
+            searchInput.focus();
+        }
+
+        modalTargetRowId = null;
+    }
+
+    function afterContentChange() {
+        reorderSections();
+        assignSectionKeys();
+        ensureCopyButtons();
+        ensureCommandIdBadges();
+        ensureRowCheckboxes();
+        normalizeCodeBlocks();
+        assignCommandIds();
+        ensureSectionHeaderChromeAll();
+        applyCollapsedFromStore();
+        filterItems(searchInput.value);
+        if (selectUi) updateSelectUI();
+    }
+
+    function saveModal() {
+        const blocks = parseBlocks(modalCommands.value);
+        // When a section's title changes, its storage key can change too (we
+        // track the actual heading element so re-keying stays exact even if
+        // titles collide). Custom sections keep their stable key.
+        let retitleHeading = null;
+
+        if (modalMode === 'editBlock' && modalKey && modalBlockIndex !== null) {
+            const model = getSectionModel(modalKey);
+            if (model.commands.length === 0) return;
+            if (blocks.length === 0) { closeModal(); return; }
+            // Never allow a single-command edit to overwrite a divider.
+            if (String(model.commands[modalBlockIndex]).trim() === '---') {
+                closeModal();
+                return;
+            }
+            const newTitle = modalHeading.value.trim();
+            if (!newTitle) {
+                modalHeading.value = model.title;
+                modalHeading.focus();
+                return;
+            }
+            const titleChanged = newTitle !== model.title;
+            if (titleChanged) model.title = newTitle;
+            model.commands.splice(modalBlockIndex, 1, ...blocks);
+
+            const store = getStore();
+            const isCustom = (store.custom || []).some(m => m.key === modalKey);
+
+            saveModel(modalKey, model);
+            const newHeading = replaceSectionDom(modalKey, model);
+
+            if (!isCustom && titleChanged) {
+                delete (store.edits || {})[modalKey];
+                saveStore(store);
+                retitleHeading = newHeading;
+            }
+        } else {
+            const title = modalHeading.value.trim();
+            if (!title) {
+                modalHeading.focus();
+                return;
+            }
+            if (modalMode === 'edit' && modalKey) {
+                const oldTitle = (getSectionModel(modalKey) || {}).title;
+                const titleChanged = title !== oldTitle;
+                saveModel(modalKey, { title, commands: blocks });
+                const newHeading = replaceSectionDom(modalKey, { title, commands: blocks });
+
+                if (titleChanged) {
+                    const store = getStore();
+                    const isCustom = (store.custom || []).some(m => m.key === modalKey);
+                    if (!isCustom) {
+                        delete (store.edits || {})[modalKey];
+                        saveStore(store);
+                        retitleHeading = newHeading;
+                    }
+                }
+            } else {
+                const key = `custom-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+                const store = getStore();
+                store.custom = store.custom || [];
+                store.custom.push({ key, title, commands: blocks });
+                saveStore(store);
+                content.appendChild(renderSection(key, title, blocks));
+            }
+        }
+
+        afterContentChange();
+
+        if (retitleHeading) {
+            const newKey = retitleHeading.getAttribute('data-section-key');
+            if (newKey) saveModel(newKey, getSectionModel(newKey));
+        }
+
+        closeModal();
+    }
+
+    function deleteSection(key) {
+        if (!key) return;
+        const store = getStore();
+        const isCustom = (store.custom || []).some(m => m.key === key);
+        if (isCustom) {
+            store.custom = store.custom.filter(m => m.key !== key);
+        } else {
+            store.deleted = store.deleted || [];
+            if (!store.deleted.includes(key)) store.deleted.push(key);
+            delete (store.edits || {})[key];
+        }
+        saveStore(store);
+        content.querySelectorAll(`[data-section-key="${key}"]`).forEach(el => el.remove());
+        afterContentChange();
+        searchInput.focus();
+    }
+
+    modalSave.addEventListener('click', saveModal);
+    modalCancel.addEventListener('click', closeModal);
+    modalClose.addEventListener('click', closeModal);
+
+    modalDelete.addEventListener('click', () => {
+        if (modalMode === 'editBlock' && modalKey && modalBlockIndex !== null) {
+            if (!confirm('Delete this command?')) return;
+            const model = getSectionModel(modalKey);
+            model.commands.splice(modalBlockIndex, 1);
+            if (model.commands.length === 0) {
+                deleteSection(modalKey);
+            } else {
+                saveModel(modalKey, model);
+                replaceSectionDom(modalKey, model);
+                afterContentChange();
+            }
+            closeModal();
+        } else if (modalKey && confirm('Delete this section?')) {
+            deleteSection(modalKey);
+            closeModal();
+        }
+    });
+
+    editorModal.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closeModal();
+            return;
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            saveModal();
+            return;
+        }
+        if (e.target === modalCommands && e.key === 'Enter' && e.shiftKey) {
+            // Shift+Enter => start a new independent command.
+            e.preventDefault();
+            const start = modalCommands.selectionStart ?? modalCommands.value.length;
+            const end = modalCommands.selectionEnd ?? modalCommands.value.length;
+            modalCommands.value =
+                modalCommands.value.slice(0, start) + BLOCK_SEP + '\n' + modalCommands.value.slice(end);
+            const pos = start + 1;
+            modalCommands.setSelectionRange(pos, pos);
+            return;
+        }
+        if (e.key === 'Tab') {
+            const focusables = Array.from(
+                editorModal.querySelectorAll('button, input, textarea, [tabindex]:not([tabindex="-1"])')
+            ).filter(el => !el.hidden && !el.disabled);
+            if (focusables.length === 0) return;
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = document.activeElement;
+            if (e.shiftKey) {
+                if (active === first || !editorModal.contains(active)) {
+                    e.preventDefault();
+                    last.focus();
+                }
+            } else if (active === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+    });
+
+    // ------------------------------------------------------------------
+    // Bulk select: tick commands anywhere in the project, then delete them
+    // all at once. Sections that become empty are removed, same as the
+    // single-row delete.
+    // ------------------------------------------------------------------
+    function isSelectMode() {
+        return document.body.classList.contains('selecting');
+    }
+
+    function ensureRowCheckboxes(root = content) {
+        // Command rows AND '---' dividers both get a checkbox: select mode
+        // can delete them together in one pass. Nothing else changes for the
+        // existing command checkboxes.
+        root.querySelectorAll('.cmd-row, .row-divider').forEach(row => {
+            if (row.querySelector('.select-checkbox')) return;
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.className = 'select-checkbox';
+            cb.setAttribute('data-select-ui', '');
+            cb.setAttribute('aria-label', row.classList.contains('row-divider')
+                ? 'Select this divider for deletion'
+                : 'Select this command for deletion');
+            row.insertBefore(cb, row.firstChild);
+        });
+    }
+
+    // Everything select mode can tick: command rows plus dividers.
+    function getSelectableRows(root = content) {
+        return Array.from(root.querySelectorAll('.cmd-row, .row-divider'));
+    }
+
+    function updateSelectUI() {
+        // Selections only make sense for what is currently visible: when a
+        // search filter hides a section, its ticks are cleared so "Select
+        // all" and "Delete selected" always affect exactly what the user sees.
+        getSelectableRows().forEach(row => {
+            if (!row.classList.contains('selected')) return;
+            if (!isActuallyVisible(row)) {
+                const cb = row.querySelector('.select-checkbox');
+                if (cb) cb.checked = false;
+                row.classList.remove('selected');
+            }
+        });
+
+        const rows = getSelectableRows();
+        const visible = rows.filter(isActuallyVisible);
+        const selected = rows.filter(r => r.classList.contains('selected'));
+        const selVisible = selected.filter(isActuallyVisible);
+        selectInfo.textContent = `${selected.length} selected`;
+        deleteSelectedBtn.disabled = selected.length === 0;
+        if (visible.length > 0 && selVisible.length === visible.length) {
+            selectAllInput.checked = true;
+            selectAllInput.indeterminate = false;
+        } else if (selVisible.length === 0) {
+            selectAllInput.checked = false;
+            selectAllInput.indeterminate = false;
+        } else {
+            selectAllInput.indeterminate = true;
+        }
+    }
+
+    function clearSelectionState() {
+        content.querySelectorAll('.select-checkbox').forEach(cb => { cb.checked = false; });
+        content.querySelectorAll('.cmd-row.selected, .row-divider.selected')
+            .forEach(r => r.classList.remove('selected'));
+    }
+
+    function enterSelectMode() {
+        document.body.classList.add('selecting');
+        selectBar.classList.remove('hidden');
+        selectToggle.setAttribute('aria-pressed', 'true');
+        selectToggle.textContent = 'Exit select';
+        updateSelectUI();
+    }
+
+    function exitSelectMode(clearSelection = true) {
+        document.body.classList.remove('selecting');
+        selectBar.classList.add('hidden');
+        selectToggle.setAttribute('aria-pressed', 'false');
+        selectToggle.textContent = 'Select mode';
+        if (clearSelection) clearSelectionState();
+        updateSelectUI();
+    }
+
+    function deleteSelectedRows() {
+        // Selected command rows AND selected '---' dividers go in one batch.
+        const rows = getSelectableRows().filter(r => r.classList.contains('selected'));
+        if (rows.length === 0) return;
+        const dividerCount = rows.filter(r => r.classList.contains('row-divider')).length;
+        const cmdCount = rows.length - dividerCount;
+        const msg = rows.length === 1
+            ? (dividerCount === 1 ? 'Delete this selected divider?' : 'Delete this selected command?')
+            : `Delete these ${rows.length} selected items (${cmdCount} command${cmdCount === 1 ? '' : 's'}, ${dividerCount} divider${dividerCount === 1 ? '' : 's'})?\n\nSections that become empty will be removed too.`;
+        if (!confirm(msg)) return;
+
+        // Group by the code-block each selected row lives in (one block == one
+        // section in this app), then splice the rows from the stored model.
+        const byBlock = new Map();
+        rows.forEach(row => {
+            const block = row.closest('.code-block');
+            if (!block) return;
+            if (!byBlock.has(block)) byBlock.set(block, []);
+            byBlock.get(block).push(row);
+        });
+
+        byBlock.forEach((selRows, block) => {
+            const key = block.getAttribute('data-section-key');
+            if (!key) return;
+            // Model indexes include '---' divider entries, so map each row to
+            // its position among rows + dividers in DOM order. Selected
+            // dividers map to their '---' model entry and are spliced exactly
+            // like command rows.
+            const ordered = Array.from(block.children).filter(child =>
+                child.classList && (child.classList.contains('cmd-row')
+                    || child.classList.contains('row-divider')));
+            const idxs = selRows
+                .map(r => ordered.indexOf(r))
+                .filter(i => i !== -1)
+                .sort((a, b) => b - a);
+            if (idxs.length === 0) return;
+            const model = getSectionModel(key);
+            if (!model || !Array.isArray(model.commands)) return;
+            idxs.forEach(i => model.commands.splice(i, 1));
+            if (model.commands.filter(c => String(c).trim() !== '---').length === 0) {
+                deleteSection(key);
+            } else {
+                saveModel(key, model);
+                replaceSectionDom(key, model);
+            }
+        });
+
+        clearSelectionState();
+        afterContentChange();
+        searchInput.focus();
+    }
+
+    function initSelectFeature() {
+        if (!selectUi) return;
+
+        selectToggle.addEventListener('click', () => {
+            if (isSelectMode()) exitSelectMode();
+            else enterSelectMode();
+        });
+
+        selectCancel.addEventListener('click', () => exitSelectMode(true));
+
+        selectAllInput.addEventListener('change', () => {
+            const on = selectAllInput.checked;
+            getSelectableRows().forEach(row => {
+                if (!isActuallyVisible(row)) return;
+                const cb = row.querySelector('.select-checkbox');
+                if (!cb) return;
+                cb.checked = on;
+                row.classList.toggle('selected', on);
+            });
+            updateSelectUI();
+        });
+
+        deleteSelectedBtn.addEventListener('click', deleteSelectedRows);
+
+        // A tick anywhere in the content updates the row state + the header.
+        // Works for command rows and dividers alike (closest matches either).
+        content.addEventListener('change', (e) => {
+            if (!e.target.classList || !e.target.classList.contains('select-checkbox')) return;
+            const row = e.target.closest('.cmd-row, .row-divider');
+            if (row) row.classList.toggle('selected', e.target.checked);
+            updateSelectUI();
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Global key handling
+    // ------------------------------------------------------------------
+    // Clicking a section title toggles its collapse/expand state (mouse users).
+    content.addEventListener('click', (e) => {
+        const h = e.target.closest('#content h2[data-section-key]');
+        if (!h) return;
+        const key = h.getAttribute('data-section-key');
+        if (key) toggleSection(key);
+    });
+
+    document.addEventListener('keydown', (e) => {
+        // While the modal is open, it handles its own keys.
+        if (!editorModal.classList.contains('hidden')) return;
+
+        const active = document.activeElement;
+        const onSelectControl = !!(active && active.matches('[data-select-ui]'));
+
+        // Typing a printable character (outside the search box) focuses the
+        // search box and types there. Composition keys just move focus.
+        if (active !== searchInput && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            if (isTypingKey(e)) {
+                // Space on a select-mode checkbox/button toggles it instead
+                // of typing a space into the search box.
+                if (onSelectControl && e.key === ' ') return;
+                e.preventDefault();
+                // Typing is also what re-opens a closed search bar.
+                openSearchBar();
+                insertIntoSearch(e.key);
+                return;
+            }
+            if (isCompositionKey(e)) {
+                searchInput.focus();
+                return;
+            }
+        }
+
+        // Backspace pressed anywhere outside the search box (e.g. after
+        // clicking a copy button) deletes inside the search box instead.
+        if (e.key === 'Backspace' && active !== searchInput && !onSelectControl) {
+            e.preventDefault();
+            openSearchBar();
+            backspaceInSearch();
+            return;
+        }
+
+        // Ctrl+I: add a new section.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'i' || e.key === 'I')) {
+            e.preventDefault();
+            openModal('add');
+            return;
+        }
+
+        // Ctrl+/: open / close the search bar - the shortcut the original
+        // terminal bar used, and the partner of "Escape closes the bar".
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === '/' || e.code === 'Slash')) {
+            e.preventDefault();
+            if (isSearchBarOpen()) closeSearchBar();
+            else openSearchBar();
+            return;
+        }
+
+        // Ctrl+E: edit the command row whose id is typed in the search box
+        // ("#10" or, when no text matches it, "10"), otherwise the row under
+        // the focused copy button, and for a focused heading keep the whole
+        // section edit.
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'e' || e.key === 'E')) {
+            e.preventDefault();
+            const byId = getBlockById(searchInput.value);
+            if (byId) { editBlockAt(byId); return; }
+            const rowFromQuery = resolveIdForEdit(searchInput.value);
+            if (rowFromQuery) { editBlockAt(rowFromQuery); return; }
+            if (active && active !== searchInput) {
+                const row = active.closest('#content .cmd-row');
+                if (row) { editBlockAt(row); return; }
+            }
+            const key = getActiveSectionKey();
+            if (key) openModal('edit', key);
+            return;
+        }
+
+        // Delete: remove the section that contains the focused element.
+        if (e.key === 'Delete' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            const key = getActiveSectionKey();
+            if (key) {
+                e.preventDefault();
+                if (confirm('Delete this section?')) deleteSection(key);
+            }
+            return;
+        }
+
+        // Enter on a section title toggles collapse/expand.
+        if (e.key === 'Enter' && active && active.matches('#content h2[data-section-key]')) {
+            e.preventDefault();
+            toggleSection(active.getAttribute('data-section-key'));
+            return;
+        }
+
+        // Scroll page with Ctrl+ArrowUp / Ctrl+ArrowDown (even when searchInput is focused)
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+            e.preventDefault();
+            const distance = e.key === 'ArrowDown' ? 120 : -120;
+            window.scrollBy({ top: distance, behavior: 'smooth' });
+            return;
+        }
+
+        // Collapse / expand ALL sections: Ctrl+Alt+ArrowLeft / Ctrl+Alt+ArrowRight.
+        if (e.altKey && (e.ctrlKey || e.metaKey) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+            e.preventDefault();
+            if (e.key === 'ArrowLeft') collapseAllSections();
+            else expandAllSections();
+            return;
+        }
+
+        // Collapse / expand ONE section: plain ArrowLeft / ArrowRight (no
+        // modifier at all). ArrowLeft folds the section that contains the
+        // focused element; ArrowRight unfolds it. The search box is skipped
+        // so its caret navigation keeps working, and with no section in
+        // focus the arrows keep their normal browser behaviour.
+        if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+            && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            if (active === searchInput) return;
+            const key = getActiveSectionKey();
+            if (key) {
+                e.preventDefault();
+                if (e.key === 'ArrowLeft') collapseSection(key);
+                else expandSection(key);
+            }
+            return;
+        }
+
+        // Tab / Shift+Tab cycles through the visible copy buttons (and, in
+        // select mode, the row checkboxes too). The select-mode controls
+        // keep their native tab order.
+        if (e.key === 'Tab' && !onSelectControl) {
+            e.preventDefault();
+            handleTab(e.shiftKey);
+            return;
+        }
+
+        // ArrowUp / ArrowDown move between copy buttons (or, in select mode,
+        // between the row checkboxes) once one of them is focused.
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            if (active && active.classList.contains('copy-btn')) {
+                e.preventDefault();
+                moveCopyFocus(e.key === 'ArrowDown' ? 1 : -1);
+                return;
+            }
+            if (isSelectMode() && active && active.classList.contains('select-checkbox')) {
+                e.preventDefault();
+                moveSelectCheckboxFocus(e.key === 'ArrowDown' ? 1 : -1);
+                return;
+            }
+        }
+
+        // Escape - the "cancel / back out" key. It always did four things in
+        // this project (the editor modal handles its own Escape above), in
+        // this order:
+        //   1) a live query is cleared, so every section and row comes back
+        //      ("Esc to clear", also from a focused copy button);
+        //   2) from anywhere else it puts focus back into the search box;
+        //   3) while selecting it leaves Select mode (same as "Exit select");
+        //   4) with an empty query and the box already focused, it closes the
+        //      search bar itself ("Esc closes the search bar"). Typing
+        //      anywhere, Backspace or Ctrl+/ opens the bar again.
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            if (searchInput.value !== '') {
+                clearSearch();
+                return;
+            }
+            if (active !== searchInput) {
+                openSearchBar();
+                return;
+            }
+            if (isSelectMode()) {
+                exitSelectMode();
+                return;
+            }
+            closeSearchBar();
+            return;
+        }
+    });
+
+    // Enter in the search box:
+    //   "#N"        -> same action as Ctrl+E: open the editor for that id
+    //   plain number-> jump to that exact command's copy button (as before)
+    //   text search -> jump to the copy button of the BEST-matching command:
+    //                  the visible row with the most highlighted words for
+    //                  the query. Ties go to the first such row; a query with
+    //                  no highlighted matches keeps the old "first button"
+    //                  behaviour.
+    searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        e.preventDefault();
+        const q = searchInput.value.trim();
+
+        const idQuery = parseIdQuery(q);
+        if (idQuery !== null) {
+            const row = content.querySelector(`.cmd-row[data-command-id="${idQuery}"]`);
+            if (row) editBlockAt(row);
+            return;
+        }
+
+        const stat = findRowForStat(q);
+        if (stat) {
+            const btn = stat.querySelector('.copy-btn');
+            if (btn) {
+                try { btn.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+                btn.focus();
+                return;
+            }
+        }
+
+        // Re-run the (debounced) live filter synchronously so the marks
+        // scored below are up to date even when Enter is pressed before the
+        // 80ms debounce has flushed.
+        filterItems(searchInput.value);
+
+        const best = findBestMatchCopyButton();
+        if (best) {
+            try { best.scrollIntoView({ block: 'nearest' }); } catch (err) { /* noop */ }
+            best.focus();
+        }
+    }
+});
+
+    // Live filtering as the user types.
+    searchInput.addEventListener('input', debounce((e) => {
+        filterItems(e.target.value);
+        if (selectUi) updateSelectUI();
+    }, 80));
+
+    function debounce(fn, wait = 80) {
+        let t = null;
+        return function (...args) {
+            clearTimeout(t);
+            t = setTimeout(() => fn.apply(this, args), wait);
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // Init
+    // ------------------------------------------------------------------
+    assignSectionKeys();
+    migrateLegacyPres();
+    assignSectionKeys();       // re-tag after any legacy migration
+    normalizeCodeBlocks();
+    ensureCommandIdBadges();
+    ensureCopyButtons();
+    applyStoreToDom();
+    afterContentChange();
+    initSelectFeature();
+
+    // Hide/show-all button in the search header: flips its icon between the
+    // "collapse all" and "expand all" states.
+    const collapseAllBtn = document.getElementById('collapse-all-btn');
+    if (collapseAllBtn) collapseAllBtn.addEventListener('click', toggleAllSections);
+    updateCollapseAllButton();
+
+    searchInput.focus();
+});

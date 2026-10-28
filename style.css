@@ -1,0 +1,708 @@
+/* ===============================
+   BASE LAYOUT
+=============================== */
+
+html,
+body {
+    background: #0a0a0a;
+    color: #dedede;
+    font-family: "LiterationMono Nerd Font Mono", "JetBrains Mono", monospace;
+    line-height: 1.75;
+    margin: 0;
+    padding: 0;
+}
+
+#content {
+    max-width: 900px;
+    margin: auto;
+    padding: 24px 80px 80px;
+}
+
+/* ===============================
+   TYPOGRAPHY
+=============================== */
+
+h1,
+h2,
+h3,
+h4,
+h5 {
+    color: #eeeeee;
+    page-break-after: avoid;
+}
+
+p {
+    orphans: 3;
+    widows: 3;
+}
+
+a {
+    color: #ffffff;
+    text-decoration: none;
+}
+
+code {
+    background: #111111;
+    color: #d0d0d0;
+    padding: 4px 6px;
+    border-radius: 4px;
+}
+
+/* ===============================
+   CODE BLOCKS
+   هر عنوان = یک بلوک کد؛ هر دستور = یک ردیف با دکمه کپی خودش
+=============================== */
+
+.code-block {
+    background: #111111;
+    border: 1px solid #222222;
+    border-radius: 6px;
+    margin: 0 0 28px;
+    padding: 6px 0;
+    overflow: hidden;
+}
+
+.cmd-row {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 58px 12px 14px;
+}
+
+.cmd-row+.cmd-row {
+    border-top: 1px solid #1a1a1a;
+}
+
+/* "---" divider: a thin line with a small vertical gap that separates
+   sub-groups of commands INSIDE one section (not between sections). It has
+   no id and never gets a copy button - deletion goes through select mode. */
+.row-divider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 14px;
+	  background-color: black;
+	  height: 10px;
+}
+
+.row-divider .divider-line {
+    flex: 1 1 auto;
+    height: 0.1px;
+    /*background: #9300d5;*/
+    opacity: 0.3;
+}
+
+/* A selected divider uses the same tinted background as a selected command. */
+.row-divider.selected {
+    background: rgba(132, 19, 169, 0.10);
+    border-radius: 6px;
+}
+
+.row-divider+.cmd-row,
+.cmd-row+.row-divider,
+.row-divider+.row-divider {
+    border-top: none;
+}
+
+.cmd-lines {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: block;
+}
+
+.cmd-lines .ln {
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: #d0d0d0;
+}
+
+/* کامنت: کمرنگ‌تر از متن اصلی کد تا هنگام کپی اشتباه پیش نیاید */
+.cmd-lines .comment {
+    color: #7d7d7d;
+    font-style: italic;
+    opacity: 0.85;
+}
+
+/* ردیف‌های کامنت کامل: فاصله بیشتر با دستورات اصلی */
+.cmd-lines .ln.comment-line {
+    margin: 4px 0 14px;
+    color: #8a8a8a;
+}
+
+/* لیبل اختیاری «label: command» - فقط نمایشی است و هرگز کپی نمی‌شود */
+.cmd-lines .cmd-label {
+    background-color: black;
+    padding: 3px;
+    font-family: "iA Writer Mono S";
+    font-weight: bold;
+    font-size: small;
+    border: 1px solid rgb(32, 32, 32) !important;
+    border-radius: 4px;
+    margin-right: 6px;
+    color: #d0d0d0;
+    user-select: none;
+}
+
+/* شناسه عددی یکتای هر دستور؛ با «:شماره» در جستجو + Ctrl+E برای ویرایش */
+.cmd-id {
+    flex: 0 0 auto;
+    min-width: 30px;
+    font-size: 11px;
+    color: #666666;
+    background: #1a1a1a;
+    border: 1px solid #262626;
+    border-radius: 4px;
+    text-align: center;
+    line-height: 1.8;
+    padding: 0 4px;
+    user-select: none;
+    pointer-events: none;
+}
+
+/* هایلایت ردیفی که در حالت ID با «:شماره» پیدا شده است (برای تأیید قبل از Ctrl+E) */
+.cmd-row.id-target-highlight {
+    background: rgba(132, 19, 169, 0.10);
+    outline: 2px solid rgba(132, 19, 169, 0.55);
+    outline-offset: -2px;
+    border-radius: 6px;
+}
+
+.cmd-row.id-target-highlight .cmd-id {
+    color: #8413A9;
+    background: #1c0f26;
+    border-color: #8413A9;
+}
+
+.cmd-row.id-target-highlight .copy-btn {
+    border-color: #8413A9;
+}
+
+/* دکمه کپی: مقابل هر دستور، وسط همان ردیف، جایگاه ثابت */
+.copy-btn {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    background: #222222;
+    color: #888888;
+    border: 1px solid #333333;
+    border-radius: 4px;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    outline: none;
+}
+
+.copy-btn:hover,
+.copy-btn:focus {
+    background: #333333;
+    color: #ffffff;
+    border-color: #8413A9;
+}
+
+.copy-btn.copied {
+    color: #8413A9;
+    border-color: #8413A9;
+}
+
+.copy-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+}
+
+/* هایلایت بخش فعال هنگام ناوبری با کیبورد */
+h2.active-section {
+    color: #ffffff;
+}
+
+.code-block.active-section {
+    border-color: #333333;
+}
+
+.cmd-row.active-section {
+    background: rgba(132, 19, 169, 0.06);
+}
+
+/* سازگاری با بلوک‌های <pre> قدیمی */
+pre {
+    background: #111111;
+    border: 1px solid #222222;
+    border-radius: 6px;
+    padding: 24px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: hidden;
+    position: relative;
+    page-break-inside: avoid;
+}
+
+pre code {
+    background: none;
+    color: #999999;
+    padding: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* ===============================
+   TERMINAL SEARCH BAR
+=============================== */
+
+#terminal-search {
+    position: sticky;
+    top: 0;
+    z-index: 9999;
+    width: calc(100% - 40px);
+    max-width: 900px;
+    margin: 0 auto 24px;
+    background: #000000;
+    border: 1px solid #333333;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8);
+    border-radius: 6px;
+    font-family: inherit;
+}
+
+.terminal-header {
+    background: #111111;
+    padding: 6px 16px;
+    border-bottom: 1px solid #222222;
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: #666666;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+}
+
+.terminal-body {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+}
+
+.terminal-body .prompt {
+    color: #8413A9;
+    font-weight: bold;
+    margin-right: 12px;
+}
+
+#search-input {
+    background: transparent;
+    border: none;
+    color: rgb(222, 222, 222);
+    font-family: inherit;
+    font-size: 15px;
+    width: 100%;
+    outline: none;
+}
+
+/* ===============================
+   BLOCK ELEMENTS & PRINT CONTROL
+=============================== */
+
+blockquote {
+    border-left: 4px solid #444444;
+    padding-left: 20px;
+    color: #d0d0d0;
+}
+
+mark {
+    background: #444444;
+    color: #ffffff;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid #222222;
+    margin: 60px 0;
+}
+
+@page {
+    size: A4;
+    margin: 20mm;
+}
+
+@media print {
+
+    html,
+    body {
+        background: #0a0a0a !important;
+        color: #999999 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+
+    pre,
+    code {
+        -webkit-print-color-adjust: exact;
+    }
+
+    .copy-btn,
+    .cmd-id,
+    .select-checkbox,
+    #terminal-search,
+    #editor-modal {
+        display: none !important;
+    }
+}
+
+/* ===============================
+   SEARCH HIGHLIGHT
+=============================== */
+
+mark.search-hit {
+    background: #530B69;
+    color: #ffffff;
+    border-radius: 2px;
+}
+
+/* ===============================
+   ADD / EDIT MODAL
+=============================== */
+
+#editor-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+}
+
+#editor-modal.hidden {
+    display: none;
+}
+
+.modal-box {
+    background: #0d0d0d;
+    border: 1px solid #333333;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 640px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.9);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid #222222;
+}
+
+.modal-header span {
+    color: #eeeeee;
+    font-size: 15px;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: #888888;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+}
+
+.modal-close:hover,
+.modal-close:focus {
+    color: #ffffff;
+}
+
+.modal-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+}
+
+.modal-body label {
+    color: #888888;
+    font-size: 12px;
+}
+
+.modal-body input,
+.modal-body textarea {
+    background: #111111;
+    border: 1px solid #333333;
+    color: #dedede;
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    resize: vertical;
+}
+
+.modal-body input:focus,
+.modal-body textarea:focus {
+    border-color: #8413A9;
+}
+
+.modal-body input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.modal-hint {
+    color: #666666;
+    font-size: 11px;
+    line-height: 1.6;
+    margin: -2px 0 6px;
+}
+
+.modal-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 12px 16px;
+    border-top: 1px solid #222222;
+}
+
+.modal-btn {
+    background: #222222;
+    color: #dddddd;
+    border: 1px solid #333333;
+    border-radius: 4px;
+    padding: 8px 16px;
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.modal-btn:hover,
+.modal-btn:focus {
+    border-color: #333333;
+}
+
+.modal-btn.primary {
+    background: #222222;
+    color: #ffffff;
+    border-color: #333333;
+}
+
+.modal-btn.danger {
+    background: #222222;
+    color: #ffffff;
+    border-color: #333333;
+}
+
+/* ===============================
+   SELECT MODE (tick multiple & delete at once)
+================================ */
+
+.terminal-tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.header-btn {
+    background: #1a1a1a;
+    color: #888888;
+    border: 1px solid #333333;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 1.6;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.header-btn:hover,
+.header-btn:focus,
+.header-btn[aria-pressed="true"] {
+    color: #ffffff;
+    border-color: #8413A9;
+}
+
+.header-btn[aria-pressed="true"] {
+    background: rgba(132, 19, 169, 0.12);
+    border-color: #8413A9;
+}
+
+#select-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 8px 16px;
+    border-top: 1px solid #222222;
+    background: #0d0d0d;
+    font-size: 12px;
+    color: #666666;
+}
+
+#select-bar.hidden {
+    display: none;
+}
+
+/* The search bar can be closed with Escape (Ctrl+/ or just typing opens it
+   again) - same behaviour as the original terminal search bar. */
+#terminal-search.hidden {
+    display: none;
+}
+
+.select-all-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    color: #888888;
+}
+
+#select-bar input[type="checkbox"],
+.select-checkbox {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: #8413A9;
+    cursor: pointer;
+}
+
+#select-info {
+    color: #8413A9;
+}
+
+#select-bar .modal-btn {
+    padding: 5px 12px;
+    font-size: 12px;
+}
+
+/* چک‌باکس هر ردیف؛ فقط در حالت Select دیده می‌شود */
+.select-checkbox {
+    flex: 0 0 auto;
+    display: none;
+    margin: 4px 0 0;
+}
+
+body.selecting .select-checkbox {
+    display: block;
+}
+
+.cmd-row.selected {
+    background: rgba(132, 19, 169, 0.10);
+}
+
+.cmd-row.selected .cmd-id,
+.cmd-row.selected .copy-btn {
+    border-color: #8413A9;
+}
+
+/* ===============================
+   COLLAPSE / EXPAND SECTIONS
+================================ */
+
+/* Section title: clickable + focusable, but never shows a default focus box */
+#content h2[data-section-key] {
+    cursor: pointer;
+    outline: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+/* Hidden state: the whole code block folds away under the title */
+.code-block.collapsed {
+    display: none;
+}
+
+#content h2.collapsed {
+    color: #ffffff;
+    margin-bottom: 26px;
+}
+
+/* Minimal caret (SVG) at the end of the title, in the app's purple.
+   Invisible by default so the page stays clean; it appears only when the
+   heading is hovered/focused and it stays permanently visible on collapsed
+   sections so the user can tell at a glance which blocks are hidden. */
+#content h2 .collapse-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    margin-left: 8px;
+    vertical-align: middle;
+    color: #8413A9;
+    opacity: 0;
+    transform: rotate(0deg);
+    transition: opacity 0.15s ease, transform 0.2s ease, filter 0.15s ease;
+    pointer-events: none;
+}
+
+#content h2 .collapse-icon svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+#content h2:hover .collapse-icon,
+#content h2:focus .collapse-icon,
+#content h2.collapsed .collapse-icon {
+    opacity: 1;
+}
+
+/* Focus state: a subtle purple glow + slight grow instead of a focus box */
+#content h2:focus .collapse-icon {
+    filter: drop-shadow(0 0 6px rgba(132, 19, 169, 0.8));
+    transform: scale(1.2);
+}
+
+/* Tab focus on a section TITLE (especially a collapsed one): the title must
+   be clearly visible as the current focus, otherwise the user "gets lost" in
+   a folded section whose copy buttons are hidden. Purple glow + tint + left
+   accent bar make the focused title unmistakable. */
+#content h2[data-section-key]:focus {
+    color: #ffffff;
+    background: rgba(132, 19, 169, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(132, 19, 169, 0.45), 0 0 18px rgba(132, 19, 169, 0.25);
+    padding-left: 10px;
+    margin-left: -10px;
+    transition: box-shadow 0.15s ease, background 0.15s ease;
+}
+
+/* Collapsed sections show the caret rotated 90deg, i.e. pointing right
+   (the "still closed" / expandable affordance). */
+#content h2.collapsed .collapse-icon {
+    transform: rotate(90deg);
+}
+
+#content h2.collapsed:focus .collapse-icon {
+    transform: rotate(90deg) scale(1.2);
+}
+
+/* "Hide all / show all" icon button in the search bar */
+.collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 6px;
+    line-height: 1.4;
+}
+
+.collapse-toggle svg {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}

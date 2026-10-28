@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>PAYAM Simple Dark – Print Edition</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <!-- Search bar: always visible, typing anywhere focuses it -->
+    <div id="terminal-search">
+        <div class="terminal-header">
+            <span>Search · Esc clear &amp; close (Ctrl+/ opens) · Ctrl+I new section · Ctrl+E edit command · Del delete section · #N + Enter edits · ← hide section · → show section · Ctrl+Alt+← hide all · Ctrl+Alt+→ show all</span>
+            <span class="terminal-tools">
+                <span id="search-count">0 sections</span>
+                <button id="collapse-all-btn" class="header-btn collapse-toggle" type="button" title="Hide all commands (Ctrl+Alt+ArrowLeft)" aria-label="Hide all commands"></button>
+                <button id="select-toggle" class="header-btn" type="button" data-select-ui aria-pressed="false" title="Select mode: tick commands, then delete them all at once">Select mode</button>
+            </span>
+        </div>
+        <div class="terminal-body">
+            <span class="prompt">></span>
+            <input type="text" id="search-input"
+                placeholder="Type to search titles, commands &amp; comments…  «#5» (hash + number, no space) finds, highlights &amp; edits command 5 · Ctrl+E or Enter edits it · plain text + Enter copies · Esc clears · Esc again closes the bar (type or Ctrl+/ opens it) · '---' makes a divider · 'label: command' shows a label chip"
+                autocomplete="off" />
+        </div>
+
+        <!-- Bulk-select bar: appears when Select mode is turned on -->
+        <div id="select-bar" class="hidden">
+            <label class="select-all-label"><input type="checkbox" id="select-all" data-select-ui /><span>Select all</span></label>
+            <span id="select-info">0 selected</span>
+            <button id="delete-selected" class="modal-btn danger" type="button" disabled data-select-ui>Delete selected</button>
+            <button id="select-cancel" class="modal-btn" type="button" data-select-ui>Exit select</button>
+        </div>
+    </div>
+
+    <div id="content">
+
+        <h2 id="venv">.venv</h2>
+        <div class="code-block">
+            <div class="cmd-row"><span class="cmd-lines">.venv\Scripts\activate  # فعال کردن محیط مجازی</span></div>
+        </div>
+
+        <h2 id="photo">1 Photo</h2>
+        <div class="code-block">
+            <div class="cmd-row"><span class="cmd-lines">python demos\demo_reconstruct.py -i "C:\Users\Payam\Desktop\DECA_input" -s "C:\Users\Payam\Desktop\DECA_input\results" --device cuda --rasterizer_type standard --saveVis True --saveObj True --saveMat True</span></div>
+        </div>
+
+        <h2 id="folder">folder</h2>
+        <div class="code-block">
+            <div class="cmd-row"><span class="cmd-lines">python demos\demo_reconstruct.py -i "C:\Users\YourName\Desktop\my_photos" -s "C:\Users\YourName\Desktop\my_photos\results" --device cuda --rasterizer_type standard --saveVis True --saveObj True</span></div>
+        </div>
+
+        <h2 id="git">git</h2>
+        <div class="code-block">
+            <div class="cmd-row"><span class="cmd-lines">git init  # ساخت مخزن جدید</span></div>
+            <div class="cmd-row"><span class="cmd-lines">git add .  # اضافه کردن همه تغییرات</span></div>
+            <div class="cmd-row"><span class="cmd-lines">git commit -m "comment"  # ذخیره تغییرات</span></div>
+            <div class="cmd-row"><span class="cmd-lines">git push origin main  # انتشار روی ریموت</span></div>
+        </div>
+
+        <!-- content div -->
+    </div>
+
+    <!-- Add / Edit Section / Edit Command Modal -->
+    <div id="editor-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modal-heading-label">
+        <div class="modal-box">
+            <div class="modal-header">
+                <span id="modal-title">Add new section</span>
+                <button id="modal-close" class="modal-close" type="button" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <label id="modal-heading-label" for="modal-heading">Title</label>
+                <input type="text" id="modal-heading" placeholder="e.g. git commands" autocomplete="off" />
+                <label for="modal-commands">Commands &amp; comments</label>
+                <textarea id="modal-commands" rows="8" spellcheck="false"
+                    placeholder="git init  # توضیح دستور&#10;git add .&#10;git commit -m &quot;msg&quot;  # کامنت همین خط&#10;&#10;git push  # با خط خالی (یا دو بار Enter) هر دستور جدا می‌شود"></textarea>
+                <p class="modal-hint">یک‌بار Enter = ادامه همان دستور · خط خالی یا دو بار Enter یا Shift+Enter = شروع یک دستور مستقل با دکمه کپی جدا</p>
+            </div>
+            <div class="modal-footer">
+                <button id="modal-save" class="modal-btn primary" type="button">Save</button>
+                <button id="modal-delete" class="modal-btn danger" type="button" hidden>Delete section</button>
+                <button id="modal-cancel" class="modal-btn" type="button">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
